@@ -1,6 +1,6 @@
 # pg-collation-check
 
-Login banner and fix script for PostgreSQL collation version mismatches on Debian.
+Login warning and fix script for PostgreSQL collation version mismatches on Debian.
 
 ## Background
 
@@ -20,19 +20,43 @@ DETAIL:  The database was created using collation version 2.36, but the operatin
 Applications usually ignore this warning, so it goes unnoticed until someone opens a
 psql session. This repository makes it visible at login instead.
 
-## What gets installed
+## How it works
+
+A check writes its result into a file, and every interactive login shell shows that file:
 
 | File | Purpose |
 | --- | --- |
-| `/etc/update-motd.d/90-pg-collation` | Checks all local clusters at every login and shows a banner with the affected databases and the fix instructions. Prints nothing while everything is fine. |
+| `/usr/local/sbin/pg-collation-check` | Checks all local clusters and writes an orange warning with the affected databases, the fix instructions, the time of the check and how to repeat it to `/run/login-warnings/pg-collation`. Removes the file when everything is fine. |
+| `/etc/systemd/system/pg-collation-check.service` | Runs the check once after every boot, after PostgreSQL has started. |
+| `/etc/dpkg/dpkg.cfg.d/pg-collation-check` | Runs the check after every dpkg run (`post-invoke`), so a glibc or PostgreSQL update shows up at once. |
+| `/etc/profile.d/login-warnings.sh` | Prints every file in `/run/login-warnings` in interactive login shells: in every terminal window, for every user, and never in scripts or file transfers. |
 | `/usr/local/sbin/pg-collation-fix` | Runs `REINDEX DATABASE` on every affected database, then `ALTER DATABASE ... REFRESH COLLATION VERSION`. The version is only refreshed if the reindex succeeded. |
 
-There is no state file, timer or service. The banner queries PostgreSQL directly, so
-it appears by itself when a mismatch exists and disappears once it is fixed.
+A database counts as affected when its stored collation version differs from the version
+the running server reports, or, for the libc provider, from the glibc installed on disk.
+The second catches a glibc update before PostgreSQL is restarted; the warning then asks for
+a reboot or a PostgreSQL restart first.
+
+Run the check by hand at any time:
+
+```bash
+pg-collation-check
+```
+
+If a cluster cannot be queried, the check keeps the previous result and exits with status 1,
+so a failed check never looks like an all-clear. `/run` is emptied at reboot, and the check
+at boot writes the file again.
+
+The warning is shown by the login shell and not by the login message (motd): sshd shows the
+login message only once per SSH connection, and clients like Bitvise open further terminal
+windows on the same connection.
+
+`/run/login-warnings` is meant to be shared: other checks can put their own file there and
+remove it once their problem is solved.
 
 ## Requirements
 
-- Debian or a derivative where `pam_motd` runs `/etc/update-motd.d`
+- Debian or a derivative with systemd and dpkg
 - PostgreSQL installed locally from the Debian or PGDG packages
 - PostgreSQL 15 or newer; older versions do not track the collation version per
   database and are skipped
@@ -74,7 +98,7 @@ To see which version is installed:
 
 ## Fixing a mismatch
 
-When the banner appears, rebuild the indexes and reboot:
+When the warning appears, rebuild the indexes and reboot:
 
 ```bash
 runuser -u postgres -- /usr/local/sbin/pg-collation-fix
@@ -85,31 +109,40 @@ While indexes are rebuilt, queries on the affected tables have to wait. On large
 databases, stop the applications using them first.
 
 If a database fails, the script continues with the others, keeps the old collation
-version for the failed one and exits with status 1. The banner stays until that
+version for the failed one and exits with status 1. The warning stays until that
 database is fixed as well. The most likely cause is a duplicate key error: the changed
 sort order has let duplicates into a unique index. Resolve the duplicates and run the
 script again.
 
-Right after a glibc upgrade, the running PostgreSQL server still reports the old
-version until it is restarted. The banner therefore appears after the reboot that
-follows the upgrade, which is also the right moment for the reindex.
+Right after a glibc upgrade, the running PostgreSQL server still uses the old glibc until
+it is restarted. A reindex then would still sort the old way, so the warning asks for a
+reboot first, or for a PostgreSQL restart (`systemctl restart postgresql`, which restarts all
+clusters) followed by `pg-collation-check`. After a reboot the check runs by itself.
 
 ## Uninstall
 
 ```bash
-rm -f /etc/update-motd.d/90-pg-collation /usr/local/sbin/pg-collation-fix
+systemctl disable --now pg-collation-check.service
+rm -f /etc/systemd/system/pg-collation-check.service /etc/dpkg/dpkg.cfg.d/pg-collation-check \
+      /usr/local/sbin/pg-collation-check /usr/local/sbin/pg-collation-fix /run/login-warnings/pg-collation
+systemctl daemon-reload
 ```
+
+`/etc/profile.d/login-warnings.sh` only shows what is in `/run/login-warnings`; remove it as
+well if no other check uses that directory.
 
 ## Development
 
-The shell scripts must keep LF line endings. Git does not convert line endings in this
-repository (`* -text` in `.gitattributes`), so a script saved with CRLF on Windows would be
-committed that way and fail on the server with `/bin/bash^M: bad interpreter`.
+All files except the Windows launchers (`*.cmd`) must keep LF line endings. Git does not
+convert line endings in this repository (`* -text` in `.gitattributes`), so a file saved with
+CRLF on Windows would be committed that way: a script fails on the server with
+`/bin/bash^M: bad interpreter`, and in the systemd unit or the dpkg hook line the CR becomes
+part of the command.
 
 On the machine you commit from, activate the guard once after cloning: double-click
 `install-git-hooks.cmd` on Windows, or run `pwsh ./install-git-hooks.ps1`. It copies
 `_git_hooks/pre-commit` into `.git/hooks`, which git does not version. The hook refuses a
-commit that contains a script with CRLF line endings, and one without a new version section
+commit that contains a file with CRLF line endings (except `*.cmd`), and one without a new version section
 in `CHANGELOG.md` and a matching `VERSION` in `pg-collation-fix`. None of these files is
 needed on the servers.
 

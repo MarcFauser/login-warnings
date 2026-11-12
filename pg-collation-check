@@ -1,0 +1,179 @@
+#!/bin/sh
+# pg-collation-check
+#
+# Checks every local PostgreSQL cluster (15 or newer, online, not a standby) for databases
+# whose stored collation version no longer matches the operating system, and writes the
+# result to /run/login-warnings/pg-collation. /etc/profile.d/login-warnings.sh shows that
+# file in every interactive login shell. Without a mismatch the file is removed.
+#
+# A database counts as affected when its stored version differs from the version the
+# running server reports, or - for the libc provider - from the glibc installed on disk.
+# The second catches a glibc upgrade before PostgreSQL has been restarted: until then the
+# running server still reports the old version.
+#
+# Runs after every boot (pg-collation-check.service) and after every dpkg run
+# (/etc/dpkg/dpkg.cfg.d/pg-collation-check). Run it by hand at any time, as root.
+# If a cluster cannot be queried, the previous result is kept and the exit status is 1,
+# so a failed check never looks like an all-clear.
+#
+# Usage: pg-collation-check [--quiet] [--trigger boot|dpkg|manual]
+PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+cd /
+
+DIR=/run/login-warnings
+FILE=$DIR/pg-collation
+
+quiet=0
+trigger=manual
+while [ $# -gt 0 ]
+do
+    case $1 in
+        --quiet) quiet=1 ;;
+        --trigger) shift; trigger=${1:-manual} ;;
+        *) echo "Usage: pg-collation-check [--quiet] [--trigger boot|dpkg|manual]" >&2; exit 2 ;;
+    esac
+    shift
+done
+
+case $trigger in
+    boot) checked_by="at boot" ;;
+    dpkg) checked_by="after a package change" ;;
+    *) checked_by="by hand" ;;
+esac
+
+if [ "$(id -u)" -ne 0 ]
+then
+    echo "Please run as root." >&2
+    exit 1
+fi
+
+query()
+{
+    timeout 5 runuser -u postgres -- psql -XAtq "port=$1 dbname=postgres connect_timeout=2" -c "$2" 2>/dev/null
+}
+
+# The glibc version a freshly started process gets, e.g. 2.41. Only digits and dots are
+# accepted, because the value goes into the SQL below.
+installed=$(getconf GNU_LIBC_VERSION 2>/dev/null | awk '{ print $2 }')
+case $installed in
+    [0-9]*.[0-9]*) ;;
+    *) installed="" ;;
+esac
+case $installed in
+    *[!0-9.]*) installed="" ;;
+esac
+
+if command -v pg_lsclusters >/dev/null 2>&1
+then
+    # Standbys report "online,recovery" and are skipped; the primary's reindex reaches them.
+    ports=$(pg_lsclusters -h 2>/dev/null | while read -r _ _ port status _
+    do
+        if [ "$status" = "online" ]
+        then
+            echo "$port"
+        fi
+    done)
+else
+    ports=5432
+fi
+
+result=""
+failed=""
+for port in $ports
+do
+    if ! version=$(query "$port" "SHOW server_version_num") || [ -z "$version" ]
+    then
+        failed="$failed $port"
+        continue
+    fi
+    if [ "$version" -lt 150000 ]
+    then
+        continue
+    fi
+
+    if ! rows=$(query "$port" "
+        SELECT 'port $port, ' || datname || ': '
+               || coalesce(datcollversion, 'none') || ' -> '
+               || coalesce(pg_database_collation_actual_version(oid), 'none')
+               || CASE WHEN datlocprovider = 'c' AND '$installed' <> ''
+                            AND pg_database_collation_actual_version(oid) IS DISTINCT FROM '$installed'
+                       THEN ' (glibc $installed installed, applies after the next PostgreSQL restart)'
+                       ELSE '' END
+        FROM pg_database
+        WHERE datallowconn
+          AND (datcollversion IS DISTINCT FROM pg_database_collation_actual_version(oid)
+               OR (datlocprovider = 'c' AND '$installed' <> ''
+                   AND datcollversion IS DISTINCT FROM '$installed'))")
+    then
+        failed="$failed $port"
+        continue
+    fi
+    if [ -n "$rows" ]
+    then
+        result="$result$rows
+"
+    fi
+done
+
+if [ -n "$failed" ]
+then
+    echo "pg-collation-check: could not query the cluster(s) on port(s)$failed; the previous result in $FILE is kept." >&2
+    exit 1
+fi
+
+mkdir -p -m 0755 "$DIR"
+checked_at=$(date '+%Y-%m-%d %H:%M:%S %:z')
+
+if [ -z "$result" ]
+then
+    rm -f "$FILE"
+    if [ "$quiet" -eq 0 ]
+    then
+        echo "No collation version mismatch found (checked $checked_at)."
+    fi
+    exit 0
+fi
+
+# Orange (index 208 of the 256-colour palette) so the warning stands out.
+orange=$(printf '\033[38;5;208m')
+reset=$(printf '\033[0m')
+
+# With a newer glibc on disk than the running server uses, a reindex would still sort
+# with the old one, and pg-collation-fix compares with the running server.
+if printf '%s' "$result" | grep -q 'applies after the next PostgreSQL restart'
+then
+    advice="PostgreSQL still runs with the old glibc. Reboot first, or restart PostgreSQL
+(systemctl restart postgresql) and run pg-collation-check; the warning then shows
+which databases need the fix."
+else
+    advice="To fix, rebuild the indexes and reboot afterwards:
+  runuser -u postgres -- /usr/local/sbin/pg-collation-fix
+  reboot"
+fi
+
+# Written next to the target and renamed, so a login never shows a half-written file.
+tmp="$FILE.tmp.$$"
+cat > "$tmp" <<EOF
+
+${orange}======================================================================
+ PostgreSQL collation version mismatch
+======================================================================
+The collation version of the operating system (glibc) has changed.
+Text indexes may be inconsistent until they are rebuilt.
+
+Affected databases (stored -> current):
+$(printf '%s' "$result" | sed 's/^/  /')
+
+$advice
+
+While indexes are rebuilt, queries on the affected tables have to wait.
+Checked $checked_at ($checked_by). Check again: pg-collation-check${reset}
+
+EOF
+chmod 0644 "$tmp"
+mv -f "$tmp" "$FILE"
+
+if [ "$quiet" -eq 0 ]
+then
+    cat "$FILE"
+fi

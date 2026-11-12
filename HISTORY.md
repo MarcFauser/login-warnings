@@ -81,3 +81,37 @@ byte-identical to the repository. The banner appeared in the installer and at a 
 both in Windows Terminal and in Bitvise. Between the other login messages it did not look like
 a warning, so it is now printed in orange (palette index 208) and the colour is reset at its
 end.
+
+## 2026-11-12 - 2.0.0: a file written by the check, shown by the login shell
+
+In Bitvise the banner only appeared in the first terminal window. The OpenSSH source explains
+it: sshd opens the PAM session, and pam_motd with it, once per connection right after
+authentication (`sshd-session.c`, `do_pam_session`), and further windows are channels on the
+same connection. sshd also clears the collected login messages as soon as the first channel of
+any kind starts and shows them only in a terminal channel (`session.c`, `display_loginmsg` and
+the `sshbuf_reset(loginmsg)` calls), so an SFTP window or a remote command opened first
+swallows the login message. pam_motd's directories (`/run/motd.d` and others, pam_motd(8))
+belong to the same session and have the same limit.
+
+A first answer kept the login message and added a profile.d script that printed the full banner
+in further windows and a reminder line in the first one, telling them apart by
+`$SSH_CONNECTION` and a marker per connection. The user then suggested a simpler design: run
+the check when something can change and write the result to a file, and let every interactive
+login show the file. That replaced the first answer before it was committed:
+
+- the login shell only prints a file, so every window, every user, no duplicates, and no
+  PostgreSQL query or timeout at login;
+- the check runs after every boot (systemd, after `postgresql.service`, which itself waits for
+  every `postgresql@` cluster), after every dpkg run (`post-invoke`, which must never fail
+  because a failing hook aborts dpkg) and by hand;
+- at the user's suggestion it also compares with the glibc installed on disk, which closes the
+  gap between a glibc update and the PostgreSQL restart; the warning then says to reboot or,
+  as the user added, to restart PostgreSQL and run the check by hand;
+- also at his suggestion, the warning names the time of the check and how to repeat it;
+- a cluster that cannot be queried keeps the previous result instead of clearing it, so a
+  failed check never reads as an all-clear;
+- `/run/login-warnings` is a shared directory, so later checks can add their own file. If a
+  second check appears, the display part may move to a repository of its own.
+
+The trade-off: the warning shows the state of the last check, not of the moment of login.
+Version 2.0.0, because the login message goes away and systemd and dpkg parts come in.

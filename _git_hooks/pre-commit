@@ -1,8 +1,9 @@
 #!/bin/sh
 # Two checks before every commit, both on the index, which is what gets committed:
-# 1. Every file that starts with "#!" has LF line endings. With CRLF the kernel takes the
-#    CR as part of the interpreter name ("/bin/bash^M: bad interpreter") and the script
-#    does not start on the server. Git does not convert line endings here (* -text).
+# 1. Every file except the Windows launchers (*.cmd) has LF line endings. With CRLF the
+#    kernel takes the CR as part of the interpreter name ("/bin/bash^M: bad interpreter"),
+#    and in the systemd unit and the dpkg hook line it becomes part of the command.
+#    Git does not convert line endings here (* -text).
 # 2. Every commit raises the version: CHANGELOG.md must be part of the commit, its newest
 #    version must differ from the one in HEAD, and VERSION in pg-collation-fix must match it.
 
@@ -19,22 +20,22 @@ abort()
 
 crlf_files=$(git diff --cached --name-only --diff-filter=ACMR | while IFS= read -r file
 do
-    if [ "$(git show ":$file" | head -c 2)" = "#!" ]
+    case $file in
+        *.cmd) continue ;;
+    esac
+    cr_count=$(git show ":$file" | tr -dc '\015' | wc -c)
+    if [ "$cr_count" -gt 0 ]
     then
-        cr_count=$(git show ":$file" | tr -dc '\015' | wc -c)
-        if [ "$cr_count" -gt 0 ]
-        then
-            echo "    $file"
-        fi
+        echo "    $file"
     fi
 done)
 
 if [ -n "$crlf_files" ]
 then
     echo "" >&2
-    echo "  Scripts with CRLF line endings:" >&2
+    echo "  Files with CRLF line endings:" >&2
     echo "$crlf_files" >&2
-    abort "these scripts would not start on Linux." "convert them to LF and stage them again"
+    abort "these files would break on Linux." "convert them to LF and stage them again"
 fi
 
 staged=$(git diff --cached --name-only)

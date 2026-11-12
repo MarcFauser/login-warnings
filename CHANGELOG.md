@@ -4,6 +4,35 @@ All notable changes to this project are documented in this file.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project
 uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.0.0] - 2026-11-12
+
+### Changed
+
+- The warning no longer comes from the login message. `pg-collation-check` (formerly
+  `/etc/update-motd.d/90-pg-collation`) writes it to `/run/login-warnings/pg-collation`, and
+  `/etc/profile.d/login-warnings.sh` shows that file in every interactive login shell. It now
+  appears in every terminal window, also further windows on the same SSH connection, for every
+  user, and logins no longer query PostgreSQL.
+- The warning states when the check ran (at boot, after a package change, by hand) and how
+  to run it again.
+- A database also counts as affected when its stored version differs from the glibc installed
+  on disk (libc provider), so a glibc update is reported before PostgreSQL is restarted. The
+  warning then asks for a reboot or a PostgreSQL restart first, because a reindex would still
+  use the old glibc.
+- If a cluster cannot be queried, the previous result is kept and the check exits with 1
+  instead of reporting no mismatch.
+- `pg-collation-fix` ends with a hint to reboot or run the check.
+- The pre-commit hook checks every file except `*.cmd` for CRLF, not only scripts.
+
+### Added
+
+- `pg-collation-check.service`: runs the check once after every boot, after PostgreSQL.
+- `/etc/dpkg/dpkg.cfg.d/pg-collation-check`: runs the check after every dpkg run.
+
+### Removed
+
+- `/etc/update-motd.d/90-pg-collation`; `install.sh` deletes it when updating from 1.x.
+
 ## [1.1.0] - 2026-11-12
 
 ### Changed

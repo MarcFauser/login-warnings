@@ -12,7 +12,7 @@ set -euo pipefail
 cd /
 
 # Version of the whole repository; it must match the newest section in CHANGELOG.md.
-VERSION="1.1.0"
+VERSION="2.0.0"
 
 MISMATCH_SQL="
     SELECT datname
@@ -100,3 +100,7 @@ then
     echo "duplicates into a unique index. Resolve the duplicates and run this script again." >&2
     exit 1
 fi
+
+echo
+echo "All affected databases are fixed. Reboot now; the check at boot removes the login"
+echo "warning (or run pg-collation-check as root)."
