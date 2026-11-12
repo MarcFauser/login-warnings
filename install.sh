@@ -14,9 +14,10 @@
 #   /var/lib/login-warnings                      when the last apt update started and reached a repository
 #
 # Registers apt-updates, and pg-collation if PostgreSQL is installed locally. A check that was
-# switched off (login-warnings disable) stays off. Run as root from a checkout of this
-# repository. Safe to run again; existing files are overwritten, which is also how updates are
-# applied. Removes what versions 1.x and 2.x installed under other names.
+# switched off (login-warnings disable) stays off. Run as root from the unpacked release
+# archive (/usr/local/src/login-warnings) or a checkout of this repository. Safe to run again;
+# existing files are overwritten, which is also how updates are applied (login-warnings update
+# runs it). Removes what versions 1.x and 2.x installed under other names.
 set -euo pipefail
 
 src=$(dirname "$(readlink -f "$0")")

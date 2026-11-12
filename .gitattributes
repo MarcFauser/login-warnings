@@ -7,3 +7,11 @@
 # -text switches off conversion only, not diffing: the diff attribute stays
 # unspecified, so git still detects binary files by itself.
 * -text
+
+# Left out of the release archive (git archive), which holds only what a server needs.
+/.github export-ignore
+/.gitattributes export-ignore
+/.gitignore export-ignore
+/_git_hooks export-ignore
+/install-git-hooks.cmd export-ignore
+/install-git-hooks.ps1 export-ignore

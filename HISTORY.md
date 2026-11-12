@@ -199,3 +199,24 @@ noise. All six states (updates, none, security updates with a mismatch, a failed
 with a newer glibc on disk, both checks failing, a missing result) were rendered on the server
 from the shipped scripts with fake `apt-get`, `runuser` and `pg_lsclusters` in a temporary
 folder, so the rare states were seen before anyone meets them at a login.
+
+## 2026-11-12 - 3.2.0: releases and login-warnings update
+
+The user asked whether a release that the installation downloads would be simpler, without
+git. git was already optional (the README had a route through the archive of `main`); the real
+gain is that a server installs a published version instead of whatever `main` holds at that
+moment, and that an update becomes one command. GitHub documents
+`/releases/latest/download/<asset>` as a fixed address of the newest release's uploaded file,
+so the README and `login-warnings update` use that.
+
+- A workflow creates the release on every push, because a release that has to be made by hand
+  is the one that gets forgotten. Tags were unwanted in the user's repositories unless a way of
+  publishing needs them; releases do. The workflow follows the user's caddy-deb repository
+  (`actions/checkout@v7`, `ubuntu-24.04`, write permission only in the job) and reads the
+  version with `awk ... exit` instead of `sed | head`, because Actions runs bash with pipefail.
+- The archive comes from `git archive`, with the development files marked `export-ignore`, so
+  the list of what a server gets lives next to the files.
+- `login-warnings update` changes the decision of 2026-10-26 that there is no
+  download-and-run one-liner. It downloads only from this repository's releases, unpacks next
+  to the installed copy, shows the CHANGELOG sections that are new, and only then replaces the
+  copy and runs `install.sh`. It refuses to install an older release over a newer version.

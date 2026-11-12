@@ -20,15 +20,19 @@
 #        login-warnings list          every registered check and whether it is on
 #        login-warnings enable <check>
 #        login-warnings disable <check>
+#        login-warnings update        install the latest release from GitHub
 #        login-warnings --version
 PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 cd /
 
 # Version of the whole repository; it must match the newest section in CHANGELOG.md.
-VERSION="3.1.0"
+VERSION="3.2.0"
 
 CONF=/etc/login-warnings.d
 DIR=/run/login-warnings
+# The archive of the newest GitHub release; the README installs from the same address.
+RELEASE_URL=https://github.com/MarcFauser/login-warnings/releases/latest/download/login-warnings.tar.gz
+SRC=/usr/local/src/login-warnings
 
 usage()
 {
@@ -38,6 +42,7 @@ Usage: login-warnings [--quiet] [--trigger boot|dpkg|apt|manual]
        login-warnings list
        login-warnings enable <check>
        login-warnings disable <check>
+       login-warnings update
        login-warnings --version
 EOF
     exit 2
@@ -221,7 +226,72 @@ disable()
     echo "$1 is off. Switch it on again: login-warnings enable $1"
 }
 
+# Downloads the latest release next to $SRC, shows what changed since the installed version,
+# puts it in place of $SRC and runs its install.sh. Does nothing if the release is not newer.
+update()
+{
+    need_root
+    new=$SRC.new
+    rm -rf "$new"
+    mkdir -p -m 0755 "$new"
+    echo "Downloading $RELEASE_URL"
+    if command -v wget >/dev/null 2>&1
+    then
+        wget -q -O "$new/release.tar.gz" "$RELEASE_URL" || { rm -rf "$new"; echo "Download failed." >&2; exit 1; }
+    elif command -v curl >/dev/null 2>&1
+    then
+        curl -fsSL -o "$new/release.tar.gz" "$RELEASE_URL" || { rm -rf "$new"; echo "Download failed." >&2; exit 1; }
+    else
+        rm -rf "$new"
+        echo "Neither wget nor curl is installed: apt install wget" >&2
+        exit 1
+    fi
+    if ! tar -xzf "$new/release.tar.gz" -C "$new" || [ ! -f "$new/login-warnings/install.sh" ]
+    then
+        rm -rf "$new"
+        echo "The downloaded archive does not contain login-warnings/install.sh." >&2
+        exit 1
+    fi
+    latest=$(sed -n 's/^VERSION="\([^"]*\)"$/\1/p' "$new/login-warnings/login-warnings")
+    case $latest in
+        '' | *[!0-9.]*)
+            rm -rf "$new"
+            echo "The downloaded archive has no valid version." >&2
+            exit 1
+            ;;
+    esac
+    if [ "$latest" = "$VERSION" ]
+    then
+        rm -rf "$new"
+        echo "login-warnings $VERSION is up to date."
+        exit 0
+    fi
+    if [ "$(printf '%s\n%s\n' "$VERSION" "$latest" | sort -V | tail -n 1)" != "$latest" ]
+    then
+        rm -rf "$new"
+        echo "login-warnings $VERSION is newer than the latest release $latest; nothing changed."
+        exit 0
+    fi
+    echo "Updating login-warnings $VERSION -> $latest. Changes:"
+    # The CHANGELOG sections above the installed version.
+    awk -v cur="$VERSION" '/^## \[/ { if (index($0, "## [" cur "]") == 1) exit; p = 1 } p { print "  " $0 }' \
+        "$new/login-warnings/CHANGELOG.md"
+    rm -rf "$SRC.old"
+    if [ -e "$SRC" ]
+    then
+        mv "$SRC" "$SRC.old"
+    fi
+    mv "$new/login-warnings" "$SRC"
+    rm -rf "$new" "$SRC.old"
+    echo
+    exec bash "$SRC/install.sh"
+}
+
 case ${1:-} in
+    update)
+        [ $# -eq 1 ] || usage
+        update
+        ;;
     show)
         [ $# -eq 1 ] || usage
         show

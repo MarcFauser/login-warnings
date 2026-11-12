@@ -33,7 +33,7 @@ Two checks so far:
 
 | File | Purpose |
 | --- | --- |
-| `/usr/local/sbin/login-warnings` | Runs every enabled check, shows the results, switches checks on and off. |
+| `/usr/local/sbin/login-warnings` | Runs every enabled check, shows the results, switches checks on and off, installs updates. |
 | `/etc/login-warnings.d/<check>` | One file per enabled check; its first line is the command that runs it. `<check>.off` is a check that is switched off. |
 | `/etc/systemd/system/login-warnings.service` | Runs every enabled check once after every boot, after PostgreSQL has started. |
 | `/etc/dpkg/dpkg.cfg.d/login-warnings` | Runs every enabled check after every dpkg run (`post-invoke`). |
@@ -174,43 +174,40 @@ clusters) followed by `pg-collation-check`. After a reboot the check runs by its
 ## Requirements
 
 - Debian or a derivative with systemd, dpkg and apt
+- `wget` or `curl` (on a minimal installation: `apt install wget`)
 - for `pg-collation`: PostgreSQL installed locally (see above)
 
 ## Installation
 
-All commands are run as root. The installer copies the files into place, switches on the
-checks that fit, and prints the installed version, the checks and their results. Run it again
-after every update.
-
-With git (on a minimal installation, `apt install git` first):
+Every version is published as a GitHub release with an archive `login-warnings.tar.gz` that
+holds only what a server needs. All commands are run as root.
 
 ```bash
-git clone https://github.com/MarcFauser/login-warnings.git /usr/local/src/login-warnings
+wget -qO- https://github.com/MarcFauser/login-warnings/releases/latest/download/login-warnings.tar.gz | tar -xz -C /usr/local/src
+```
+
+```bash
 bash /usr/local/src/login-warnings/install.sh
 ```
 
-Update:
+The installer copies the files into place, switches on the checks that fit, and prints the
+installed version, the checks and their results.
+
+## Update
 
 ```bash
-git -C /usr/local/src/login-warnings pull
-bash /usr/local/src/login-warnings/install.sh
+login-warnings update
 ```
 
-Without git, for the first installation and every update (the old folder is removed first,
-so files dropped from the repository do not stay behind):
+It downloads the latest release, shows the CHANGELOG sections since the installed version,
+puts the release in place of `/usr/local/src/login-warnings` and runs its `install.sh`. If the
+installed version is the latest one, or newer, it changes nothing.
 
-```bash
-rm -rf /usr/local/src/login-warnings-main
-wget -qO- https://github.com/MarcFauser/login-warnings/archive/refs/heads/main.tar.gz | tar -xz -C /usr/local/src
-bash /usr/local/src/login-warnings-main/install.sh
-```
-
-Updating from 2.x replaces `pg-collation-check.service` and
-`/etc/dpkg/dpkg.cfg.d/pg-collation-check` with `login-warnings.service` and
-`/etc/dpkg/dpkg.cfg.d/login-warnings`; `install.sh` removes the old files. Up to version 2.0.0
-the repository was called `pg-collation-check`. On a server installed from it, remove
-`/usr/local/src/pg-collation-check` or `/usr/local/src/pg-collation-check-main` and install
-from the new location.
+Servers installed before 3.2.0 have no `update` yet: remove the old source folders once
+(`/usr/local/src/login-warnings`, `/usr/local/src/login-warnings-main`, and from the time the
+repository was called `pg-collation-check`, `/usr/local/src/pg-collation-check` or
+`/usr/local/src/pg-collation-check-main`) and run the two lines of the installation.
+`install.sh` removes what 1.x and 2.x installed under other names.
 
 To see which version is installed:
 
@@ -226,7 +223,7 @@ rm -f /etc/systemd/system/login-warnings.service /etc/dpkg/dpkg.cfg.d/login-warn
       /etc/apt/apt.conf.d/80login-warnings /etc/profile.d/login-warnings.sh \
       /usr/local/sbin/login-warnings /usr/local/sbin/apt-updates-check \
       /usr/local/sbin/pg-collation-check /usr/local/sbin/pg-collation-fix
-rm -rf /etc/login-warnings.d /run/login-warnings /var/lib/login-warnings
+rm -rf /etc/login-warnings.d /run/login-warnings /var/lib/login-warnings /usr/local/src/login-warnings
 systemctl daemon-reload
 ```
 
@@ -256,6 +253,11 @@ On the machine you commit from, activate the guard once after cloning: double-cl
 commit that contains a file with CRLF line endings (except `*.cmd`), and one without a new
 version section in `CHANGELOG.md` and a matching `VERSION` in `login-warnings`. None of these
 files is needed on the servers.
+
+Releases are made by `.github/workflows/release.yml` on every push to `main`: if the newest
+version in `CHANGELOG.md` has no release yet, it tags the pushed commit `v<version>`, builds
+`login-warnings.tar.gz` with `git archive` (the files marked `export-ignore` in
+`.gitattributes` stay out) and uses the version's CHANGELOG section as the release notes.
 
 ## License
 

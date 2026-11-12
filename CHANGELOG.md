@@ -4,6 +4,23 @@ All notable changes to this project are documented in this file.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project
 uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.2.0] - 2026-11-12
+
+### Added
+
+- GitHub releases: `.github/workflows/release.yml` publishes every new version on push to
+  `main` as release `v<version>` with the archive `login-warnings.tar.gz` (only the files a
+  server needs) and the version's CHANGELOG section as release notes.
+- `login-warnings update`: downloads the latest release with wget or curl, shows the CHANGELOG
+  sections since the installed version, replaces `/usr/local/src/login-warnings` and runs its
+  `install.sh`. It changes nothing when the installed version is the latest or newer.
+
+### Changed
+
+- The README installs from the latest release into `/usr/local/src/login-warnings` instead of
+  a git clone or the archive of `main`, so a server gets a published version, and needs neither
+  git nor the branch.
+
 ## [3.1.0] - 2026-11-12
 
 ### Changed

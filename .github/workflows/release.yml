@@ -1,0 +1,77 @@
+# Publishes every version as a GitHub release: on each push to main, if the newest version in
+# CHANGELOG.md has no release yet, it tags the pushed commit v<version>, attaches
+# login-warnings.tar.gz (the files a server needs, see export-ignore in .gitattributes) and
+# uses the version's CHANGELOG section as the release notes. Servers download the archive from
+# /releases/latest/download/login-warnings.tar.gz (README, "login-warnings update").
+name: Release
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  release:
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Read the version
+        id: version
+        run: |
+          # awk with exit instead of "sed | head": under pipefail, head can end the pipe with SIGPIPE.
+          version=$(awk -F'[][]' '/^## \[[0-9]/ { print $2; exit }' CHANGELOG.md)
+          script_version=$(sed -n 's/^VERSION="\([^"]*\)"$/\1/p' login-warnings)
+          if [ -z "$version" ] || [ "$version" != "$script_version" ]
+          then
+              echo "::error::CHANGELOG.md says '$version', VERSION in login-warnings says '$script_version'."
+              exit 1
+          fi
+          if ! printf '%s\n' "$version" | grep -Eqx '[0-9]+\.[0-9]+\.[0-9]+'
+          then
+              echo "::error::'$version' is not a version number x.y.z."
+              exit 1
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+      - name: Check whether the release exists
+        id: exists
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          if gh release view "v${{ steps.version.outputs.version }}" >/dev/null 2>&1
+          then
+              echo "Release v${{ steps.version.outputs.version }} exists, nothing to do."
+              echo "exists=true" >> "$GITHUB_OUTPUT"
+          else
+              echo "exists=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Build the archive and the release notes
+        if: steps.exists.outputs.exists == 'false'
+        run: |
+          git archive --format=tar.gz --prefix=login-warnings/ -o login-warnings.tar.gz HEAD
+          tar -tzf login-warnings.tar.gz
+          version=${{ steps.version.outputs.version }}
+          awk -v v="$version" '/^## \[/ { if (p) exit; if (index($0, "## [" v "]") == 1) { p = 1; next } } p' CHANGELOG.md > notes.md
+          if [ ! -s notes.md ]
+          then
+              echo "::error::No CHANGELOG.md section for $version."
+              exit 1
+          fi
+
+      - name: Create the release
+        if: steps.exists.outputs.exists == 'false'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          version=${{ steps.version.outputs.version }}
+          gh release create "v$version" login-warnings.tar.gz \
+              --target "$GITHUB_SHA" --title "login-warnings $version" --notes-file notes.md
