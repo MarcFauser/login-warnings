@@ -5,7 +5,7 @@ window. Each check writes one section of the display into `/run/login-warnings`,
 the time it ran: green when all is well, orange when something needs attention.
 
 ```
------ login-warnings 3.3.0 ---------------------------------------------
+----- login-warnings v3.3.0 --------------------------------------------
 Package updates: 3 (0 security)
   libpq5 postgresql-18 postgresql-client-common
   show: apt list --upgradable
@@ -211,11 +211,11 @@ top, a newer release in an orange section, and at the bottom when the latest rel
 checked:
 
 ```
------ login-warnings 3.3.0 ---------------------------------------------
+----- login-warnings v3.3.0 --------------------------------------------
 ...
 
-login-warnings: 3.4.0 available
-  installed: 3.3.0
+login-warnings: v3.4.0 available
+  installed: v3.3.0
   update: login-warnings update
 
 ----- latest release checked 2026-11-12 23:06:35 +01:00 ----------------

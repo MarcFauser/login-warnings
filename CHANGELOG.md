@@ -4,6 +4,19 @@ All notable changes to this project are documented in this file.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project
 uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.3.2] - 2026-11-12
+
+### Changed
+
+- Versions are shown as `vx.y.z` wherever a person reads them: the frame
+  (`----- login-warnings v3.3.2 ---`), `login-warnings: v3.4.0 available` / `installed:`,
+  `login-warnings --version`, the messages of `login-warnings update`, the installer and the
+  title of the GitHub releases. Files that hold the version for programs (`VERSION=` in
+  `login-warnings`, `/var/lib/login-warnings/latest-release`) and the headings of this file keep
+  the bare number.
+- The note for a missing apt update record says "no apt update recorded yet" instead of naming
+  the major version.
+
 ## [3.3.1] - 2026-11-12
 
 ### Fixed

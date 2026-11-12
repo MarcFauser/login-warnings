@@ -236,3 +236,7 @@ never at login, at boot or after dpkg. It reads only the redirect of `/releases/
 and exits with 8 because it is told not to follow). A failed look keeps the old answer, and the
 closing line of the frame shows when the last successful look was, so a silent failure ages
 visibly instead of reading as "up to date".
+
+3.3.1 packs the archive with `tar.umask` 0022: unpacked on the server, git's default 0002 had
+left the source folder group-writable. 3.3.2 shows every version a person reads as `vx.y.z`, at
+the user's request; where a program reads the version, the bare number stays.

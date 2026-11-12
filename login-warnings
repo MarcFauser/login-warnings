@@ -31,7 +31,7 @@ PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 cd /
 
 # Version of the whole repository; it must match the newest section in CHANGELOG.md.
-VERSION="3.3.1"
+VERSION="3.3.2"
 
 CONF=/etc/login-warnings.d
 DIR=/run/login-warnings
@@ -167,7 +167,7 @@ show()
         '' | *[!0-9]*) latest_checked="" ;;
     esac
     echo
-    frame_line "----- login-warnings $VERSION "
+    frame_line "----- login-warnings v$VERSION "
     first=1
     for name in $names
     do
@@ -187,7 +187,7 @@ show()
     if [ -n "$latest_version" ] && newer "$latest_version" "$VERSION"
     then
         echo
-        printf '%slogin-warnings: %s available\n  installed: %s\n  update: login-warnings update%s\n' \
+        printf '%slogin-warnings: v%s available\n  installed: v%s\n  update: login-warnings update%s\n' \
             "$orange" "$latest_version" "$VERSION" "$reset"
     fi
     echo
@@ -340,16 +340,16 @@ update()
     if [ "$latest" = "$VERSION" ]
     then
         rm -rf "$new"
-        echo "login-warnings $VERSION is up to date."
+        echo "login-warnings v$VERSION is up to date."
         exit 0
     fi
     if ! newer "$latest" "$VERSION"
     then
         rm -rf "$new"
-        echo "login-warnings $VERSION is newer than the latest release $latest; nothing changed."
+        echo "login-warnings v$VERSION is newer than the latest release v$latest; nothing changed."
         exit 0
     fi
-    echo "Updating login-warnings $VERSION -> $latest. Changes:"
+    echo "Updating login-warnings v$VERSION -> v$latest. Changes:"
     # The CHANGELOG sections above the installed version.
     awk -v cur="$VERSION" '/^## \[/ { if (index($0, "## [" cur "]") == 1) exit; p = 1 } p { print "  " $0 }' \
         "$new/login-warnings/CHANGELOG.md"
@@ -392,7 +392,7 @@ case ${1:-} in
         ;;
     --version)
         [ $# -eq 1 ] || usage
-        echo "login-warnings $VERSION"
+        echo "login-warnings v$VERSION"
         exit 0
         ;;
 esac

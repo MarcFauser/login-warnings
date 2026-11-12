@@ -75,4 +75,4 @@ jobs:
         run: |
           version=${{ steps.version.outputs.version }}
           gh release create "v$version" login-warnings.tar.gz \
-              --target "$GITHUB_SHA" --title "login-warnings $version" --notes-file notes.md
+              --target "$GITHUB_SHA" --title "login-warnings v$version" --notes-file notes.md

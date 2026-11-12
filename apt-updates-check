@@ -201,7 +201,7 @@ then
     problem="the apt update started $(format_time "$start") reached no repository or did not finish; run apt update to see why"
 elif [ -z "$success" ]
 then
-    problem="no apt update recorded since login-warnings 3 was installed; run: apt update"
+    problem="no apt update recorded yet; run: apt update"
 elif [ "$age" -ge 172800 ]
 then
     problem="the daily apt update has not run since; check: systemctl status apt-daily.timer"
