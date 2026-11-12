@@ -4,6 +4,13 @@ All notable changes to this project are documented in this file.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project
 uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.1.0] - 2026-11-12
+
+### Changed
+
+- The login banner is printed in orange (index 208 of the 256-colour palette), so it stands out
+  as a warning among the other login messages. The colour is reset at its end.
+
 ## [1.0.0] - 2026-11-12
 
 ### Added

@@ -52,9 +52,13 @@ then
     exit 0
 fi
 
+# Orange (index 208 of the 256-colour palette) so the banner stands out as a warning.
+orange=$(printf '\033[38;5;208m')
+reset=$(printf '\033[0m')
+
 cat <<EOF
 
-======================================================================
+${orange}======================================================================
  PostgreSQL collation version mismatch
 ======================================================================
 The collation version of the operating system (glibc) has changed.
@@ -68,6 +72,6 @@ To fix, rebuild the indexes and reboot afterwards:
   reboot
 
 While indexes are rebuilt, queries on the affected tables have to wait.
-This message disappears automatically once all databases are fixed.
+This message disappears automatically once all databases are fixed.${reset}
 
 EOF

@@ -72,3 +72,12 @@ The prepared files were taken over with these changes:
 - The README names the GitHub owner, says that all commands run as root, mentions
   `apt install git` for minimal installations, and has development and license sections.
 - MIT license.
+
+## 2026-11-12 - first real installation, orange banner
+
+The first installation went to the server where the mismatch had been found (three databases,
+2.36 -> 2.41), using the README's "without git" route, and the downloaded files were
+byte-identical to the repository. The banner appeared in the installer and at a real login,
+both in Windows Terminal and in Bitvise. Between the other login messages it did not look like
+a warning, so it is now printed in orange (palette index 208) and the colour is reset at its
+end.
