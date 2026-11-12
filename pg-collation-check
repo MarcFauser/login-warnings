@@ -3,8 +3,8 @@
 #
 # Checks every local PostgreSQL cluster (15 or newer, online, not a standby) for databases
 # whose stored collation version no longer matches the operating system, and writes the
-# result to /run/login-warnings/pg-collation. /etc/profile.d/login-warnings.sh shows that
-# file in every interactive login shell. The file always says when the check ran: a green
+# result to /run/login-warnings/pg-collation. login-warnings shows that file in every
+# interactive login shell. The file always says when the check ran: a green
 # OK line, the orange warning, or an orange FAILED line followed by the last successful
 # result (kept in /run/login-warnings/.pg-collation.last).
 #
@@ -13,12 +13,11 @@
 # The second catches a glibc upgrade before PostgreSQL has been restarted: until then the
 # running server still reports the old version.
 #
-# Runs after every boot (pg-collation-check.service) and after every dpkg run
-# (/etc/dpkg/dpkg.cfg.d/pg-collation-check). Run it by hand at any time, as root.
-# If a cluster cannot be queried, the exit status is 1 and the login shows the failure, so a
-# failed check never looks like an all-clear.
+# Runs after every boot, dpkg run and apt update (login-warnings). Run it by hand at any
+# time, as root. If a cluster cannot be queried, the exit status is 1 and the login shows the
+# failure, so a failed check never looks like an all-clear.
 #
-# Usage: pg-collation-check [--quiet] [--trigger boot|dpkg|manual]
+# Usage: pg-collation-check [--quiet] [--trigger boot|dpkg|apt|manual]
 PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 cd /
 
@@ -34,7 +33,7 @@ do
     case $1 in
         --quiet) quiet=1 ;;
         --trigger) shift; trigger=${1:-manual} ;;
-        *) echo "Usage: pg-collation-check [--quiet] [--trigger boot|dpkg|manual]" >&2; exit 2 ;;
+        *) echo "Usage: pg-collation-check [--quiet] [--trigger boot|dpkg|apt|manual]" >&2; exit 2 ;;
     esac
     shift
 done
@@ -42,7 +41,9 @@ done
 case $trigger in
     boot) checked_by="at boot" ;;
     dpkg) checked_by="after a package change" ;;
-    *) checked_by="by hand" ;;
+    apt) checked_by="after apt update" ;;
+    manual) checked_by="by hand" ;;
+    *) echo "Usage: pg-collation-check [--quiet] [--trigger boot|dpkg|apt|manual]" >&2; exit 2 ;;
 esac
 
 if [ "$(id -u)" -ne 0 ]

@@ -144,3 +144,45 @@ showing a green line while the checks failed), and, for a check registered in
 `/etc/login-warnings.d` without any result file, "no result since boot" with the boot time.
 The trigger ("at boot") stays in the line, and date and time are always there, as the user
 asked.
+
+## 2026-11-12 - 3.0.0: package updates, and the common runner
+
+The user asked whether a Debian server runs `apt update` by itself, suspecting it does not, and
+suggested showing the available updates at login. Measured on two servers: `apt-daily.timer`
+fires twice a day, but `apt.systemd.daily` exits at once because no `APT::Periodic` setting
+exists, and `/var/lib/apt/periodic` was empty. Ubuntu shows updates at login through
+`update-notifier-common`; Debian 13 has no such package, only tools that mail or install
+(apticron, cron-apt, unattended-upgrades). So the second check is new work, not a rebuild.
+
+Decisions, each measured on the server before it was built in:
+
+- The lists are refreshed by apt's own timer, switched on with
+  `APT::Periodic::Update-Package-Lists "1"` in a file of our own, instead of a timer of our own.
+- The count comes from `apt-get -s dist-upgrade` with `Debug::NoLocking` and without cache
+  files: 0.9 seconds, and `pkgcache.bin` kept its timestamp. A security update shows its
+  archive in the simulation line, for example `Debian-Security:13/stable-security`, checked on
+  an installed package from the security archive.
+- apt's update hooks were tested in a separate list directory: `Post-Invoke-Success` runs as
+  soon as one repository was fetched, even when another one has no Release file and apt exits
+  with 100, and only an unreachable source alone suppresses it. So the stamps can tell "reached
+  no repository", not "a repository is broken", and the README says so. A failing hook makes
+  `apt update` fail ("Problem executing scripts"), so every hook ends with `|| true`.
+- Lists older than two days turn the line orange: `apt.systemd.daily` refreshes once per
+  calendar day, and the timer runs at least once between 6:00 and 18:00, so a working refresh
+  leaves at most about 42 hours between two updates. A first version showed four-day-old lists
+  in green; the test caught it.
+- Pending updates alone are shown in the terminal's normal colour, security updates in orange:
+  a server is often a few updates behind, and a warning that is always orange teaches one to
+  ignore it.
+
+With the second check came the common runner announced at the rename. The user asked whether
+a configuration tool is needed to choose the checks; from three options (commands in the
+runner, renaming files by hand, an interactive menu) the user chose the commands: `login-warnings
+list`, `enable` and `disable`. A check is on while `/etc/login-warnings.d/<check>` exists and
+off as `<check>.off`, which `install.sh` respects, so a switched-off check survives updates.
+The login shows only enabled checks, so switching one off takes effect at the next login.
+Every check runs on every trigger: `pg-collation-check` after an apt update is unnecessary but
+harmless, and the runner needs no rules per check.
+
+Version 3.0.0, because the systemd unit and the dpkg hook change their names and the version
+moves from `pg-collation-fix` to `login-warnings`.

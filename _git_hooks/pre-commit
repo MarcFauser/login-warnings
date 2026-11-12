@@ -5,9 +5,9 @@
 #    and in the systemd unit and the dpkg hook line it becomes part of the command.
 #    Git does not convert line endings here (* -text).
 # 2. Every commit raises the version: CHANGELOG.md must be part of the commit, its newest
-#    version must differ from the one in HEAD, and VERSION in pg-collation-fix must match it.
+#    version must differ from the one in HEAD, and VERSION in login-warnings must match it.
 
-script=pg-collation-fix
+script=login-warnings
 
 abort()
 {

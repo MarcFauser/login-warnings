@@ -4,6 +4,39 @@ All notable changes to this project are documented in this file.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project
 uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.0.0] - 2026-11-12
+
+### Added
+
+- Second check `apt-updates` (`/usr/local/sbin/apt-updates-check`): lists the package updates
+  the package lists offer, by name and with security updates separately, says how old the
+  lists are, and warns in orange about security updates, about lists older than two days and
+  about an apt update that reached no repository. It simulates `apt-get dist-upgrade` without
+  locking and without writing apt's cache files.
+- `/etc/apt/apt.conf.d/80login-warnings`: refreshes the package lists once a day through
+  `apt-daily.timer` (`APT::Periodic::Update-Package-Lists "1"`; Debian does not do this by
+  default), records when an apt update starts and when it reaches a repository
+  (`/var/lib/login-warnings`), and runs the checks after every apt update.
+- Common runner `/usr/local/sbin/login-warnings`: runs every enabled check (after boot, dpkg
+  and apt update), shows the results (`login-warnings show`), and switches checks on and off
+  (`login-warnings list`, `enable <check>`, `disable <check>`). A switched-off check is kept as
+  `/etc/login-warnings.d/<check>.off` and stays off on updates. `login-warnings --version`.
+
+### Changed
+
+- `pg-collation-check.service` and `/etc/dpkg/dpkg.cfg.d/pg-collation-check` are replaced by
+  `login-warnings.service` and `/etc/dpkg/dpkg.cfg.d/login-warnings`, which run every enabled
+  check; `install.sh` removes the old files.
+- The login shows the results of enabled checks only (`/etc/profile.d/login-warnings.sh` runs
+  `login-warnings show`), instead of every file in `/run/login-warnings`.
+- `install.sh` no longer requires PostgreSQL: it registers `apt-updates` always and
+  `pg-collation` only with a local PostgreSQL.
+- `pg-collation-check` also accepts `--trigger apt` and rejects unknown triggers.
+
+### Removed
+
+- `pg-collation-fix --version`; the version is now shown by `login-warnings --version`.
+
 ## [2.1.0] - 2026-11-12
 
 ### Changed

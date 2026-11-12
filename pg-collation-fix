@@ -7,12 +7,8 @@
 # Standby servers are skipped; the rebuild on the primary is replicated to them.
 #
 # Usage: runuser -u postgres -- /usr/local/sbin/pg-collation-fix
-#        /usr/local/sbin/pg-collation-fix --version
 set -euo pipefail
 cd /
-
-# Version of the whole repository; it must match the newest section in CHANGELOG.md.
-VERSION="2.1.0"
 
 MISMATCH_SQL="
     SELECT datname
@@ -35,12 +31,6 @@ list_ports()
         echo 5432
     fi
 }
-
-if [ "${1:-}" = "--version" ]
-then
-    echo "pg-collation-fix $VERSION"
-    exit 0
-fi
 
 if [ "$(id -un)" != "postgres" ]
 then

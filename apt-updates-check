@@ -1,0 +1,254 @@
+#!/bin/sh
+# apt-updates-check
+#
+# Lists the package updates the package lists on disk offer and writes them to
+# /run/login-warnings/apt-updates; login-warnings shows that file in every interactive login
+# shell. The file always says when the check ran and how old the package lists are: a green
+# line without updates, the updates by name (orange when security updates are among them), or
+# an orange FAILED line followed by the last successful result (kept in
+# /run/login-warnings/.apt-updates.last).
+#
+# Nothing is downloaded. The check simulates "apt-get dist-upgrade" without locking and
+# without writing apt's cache files, so it is safe while apt or dpkg is running. The lists
+# are refreshed by apt update: once a day by apt-daily.service, enabled by
+# APT::Periodic::Update-Package-Lists in /etc/apt/apt.conf.d/80login-warnings, or by hand.
+# The apt hooks in the same file call this script with --stamp start before and with
+# --stamp success after every apt update; apt runs the second one as soon as at least one
+# repository was fetched. The stamps in /var/lib/login-warnings give the age of the lists and
+# show when the last apt update reached no repository or did not finish. A single failing
+# repository among working ones does not show up here; apt update itself reports it.
+#
+# Runs after every boot, dpkg run and apt update (login-warnings). Run it by hand at any
+# time, as root.
+#
+# Usage: apt-updates-check [--quiet] [--trigger boot|dpkg|apt|manual]
+#        apt-updates-check --stamp start|success
+PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+cd /
+
+DIR=/run/login-warnings
+FILE=$DIR/apt-updates
+# Hidden from the login display: the last successful result.
+LAST=$DIR/.apt-updates.last
+STATE=/var/lib/login-warnings
+
+usage()
+{
+    echo "Usage: apt-updates-check [--quiet] [--trigger boot|dpkg|apt|manual]" >&2
+    echo "       apt-updates-check --stamp start|success" >&2
+    exit 2
+}
+
+quiet=0
+trigger=manual
+stamp=""
+while [ $# -gt 0 ]
+do
+    case $1 in
+        --quiet) quiet=1 ;;
+        --trigger) shift; trigger=${1:-} ;;
+        --stamp) shift; stamp=${1:-} ;;
+        *) usage ;;
+    esac
+    shift
+done
+
+if [ "$(id -u)" -ne 0 ]
+then
+    echo "Please run as root." >&2
+    exit 1
+fi
+
+# Writes stdin next to the target and renames it, so nobody reads a half-written file.
+publish()
+{
+    cat > "$1.tmp.$$"
+    chmod 0644 "$1.tmp.$$"
+    mv -f "$1.tmp.$$" "$1"
+}
+
+if [ -n "$stamp" ]
+then
+    case $stamp in
+        start | success) ;;
+        *) usage ;;
+    esac
+    mkdir -p -m 0755 "$STATE"
+    date '+%s' | publish "$STATE/apt-update-$stamp"
+    exit 0
+fi
+
+case $trigger in
+    boot) checked_by="at boot" ;;
+    dpkg) checked_by="after a package change" ;;
+    apt) checked_by="after apt update" ;;
+    manual) checked_by="by hand" ;;
+    *) usage ;;
+esac
+
+# Seconds since the epoch from a stamp file, or nothing if it is missing or not a number.
+read_stamp()
+{
+    value=""
+    if [ -f "$STATE/apt-update-$1" ]
+    then
+        read -r value < "$STATE/apt-update-$1"
+    fi
+    case $value in
+        '' | *[!0-9]*) value="" ;;
+    esac
+    echo "$value"
+}
+
+format_time()
+{
+    date -d "@$1" '+%Y-%m-%d %H:%M:%S %:z'
+}
+
+sim_ok=1
+sim=$(LC_ALL=C timeout 60 apt-get -s -o Debug::NoLocking=1 -o Dir::Cache::pkgcache= \
+    -o Dir::Cache::srcpkgcache= dist-upgrade 2>&1) || sim_ok=0
+
+mkdir -p -m 0755 "$DIR"
+checked_at=$(date '+%Y-%m-%d %H:%M:%S %:z')
+now=$(date '+%s')
+
+# Orange (index 208 of the 256-colour palette) for problems, green for the all-clear.
+orange=$(printf '\033[38;5;208m')
+green=$(printf '\033[32m')
+reset=$(printf '\033[0m')
+
+if [ "$sim_ok" -eq 0 ]
+then
+    {
+        printf '%sPackage update check FAILED - %s (%s): apt-get could not simulate the upgrade. Check again: apt-updates-check\n' \
+            "$orange" "$checked_at" "$checked_by"
+        printf '%s\n' "$sim" | grep '^E:' | head -n 3 | sed 's/^/  /'
+        printf '%s' "$reset"
+        if [ -s "$LAST" ]
+        then
+            printf '%sLast successful check:%s\n' "$orange" "$reset"
+            cat "$LAST"
+        else
+            printf '%sNo successful check since boot.%s\n' "$orange" "$reset"
+        fi
+    } | publish "$FILE"
+    echo "apt-updates-check: apt-get -s dist-upgrade failed." >&2
+    if [ "$quiet" -eq 0 ]
+    then
+        cat "$FILE"
+    fi
+    exit 1
+fi
+
+# "Inst <package> [<installed>] (<candidate> <archives> [<arch>])" is an upgrade; a line
+# without "[<installed>]" is a package that gets newly installed. A candidate from a security
+# archive names it in <archives>, e.g. "Debian-Security:13/stable-security".
+security=$(printf '%s\n' "$sim" | awk '/^Inst [^ ]+ \[/ && /\(.*-[Ss]ecurity/ { print $2 }' | sort -u)
+other=$(printf '%s\n' "$sim" | awk '/^Inst [^ ]+ \[/ && !/\(.*-[Ss]ecurity/ { print $2 }' | sort -u)
+count_security=$(printf '%s' "$security" | grep -c .)
+count_other=$(printf '%s' "$other" | grep -c .)
+count=$((count_security + count_other))
+
+start=$(read_stamp start)
+success=$(read_stamp success)
+if [ -n "$success" ]
+then
+    age=$((now - success))
+    if [ "$age" -lt 0 ]
+    then
+        age=0
+    fi
+    if [ "$age" -lt 3600 ]
+    then
+        ago="$((age / 60)) min ago"
+    elif [ "$age" -lt 172800 ]
+    then
+        ago="$((age / 3600)) h ago"
+    else
+        ago="$((age / 86400)) days ago"
+    fi
+    lists="lists from $(format_time "$success") ($ago)"
+else
+    lists="lists of unknown age"
+fi
+
+# An apt update that started after the last fetched repository has failed or is still running.
+# Lists older than two days mean that the daily refresh has not run at least once:
+# apt.systemd.daily updates once per calendar day, and apt-daily.timer (6:00 and 18:00, up to
+# 12 h random delay) runs at least once between 6:00 and 18:00 every day, so a working
+# refresh leaves at most about 42 hours between two updates.
+problem=""
+if [ -n "$start" ] && { [ -z "$success" ] || [ "$success" -lt "$start" ]; }
+then
+    problem="The apt update started $(format_time "$start") reached no repository or did not finish. Run apt update to see why."
+elif [ -z "$success" ]
+then
+    problem="No apt update recorded since login-warnings 3 was installed, so the lists may be old. Run: apt update"
+elif [ "$age" -ge 172800 ]
+then
+    problem="The package lists were last refreshed $ago, so the daily apt update has not run since. Check: systemctl status apt-daily.timer apt-daily.service"
+fi
+
+# "<label> name name ...", wrapped and indented by two spaces.
+names()
+{
+    printf '%s%s\n' "$1" "$(printf '%s\n' "$2" | tr '\n' ' ')" | fold -s -w 76 | sed 's/ *$//; s/^/  /'
+}
+
+if [ "$count" -eq 0 ]
+then
+    if [ -n "$problem" ]
+    then
+        colour=$orange
+    else
+        colour=$green
+    fi
+    {
+        printf '%sNo package updates - checked %s (%s), %s. Check again: apt-updates-check%s\n' \
+            "$colour" "$checked_at" "$checked_by" "$lists" "$reset"
+        if [ -n "$problem" ]
+        then
+            printf '%s%s%s\n' "$orange" "$problem" "$reset"
+        fi
+    } | publish "$FILE"
+else
+    # Plain without security updates: pending updates alone are no reason for alarm.
+    if [ "$count_security" -gt 0 ] || [ -n "$problem" ]
+    then
+        colour=$orange
+    else
+        colour=""
+    fi
+    if [ "$count" -eq 1 ]
+    then
+        what="1 package update"
+    else
+        what="$count package updates"
+    fi
+    {
+        printf '%s%s (%s security) - checked %s (%s), %s. Show: apt list --upgradable. Check again: apt-updates-check\n' \
+            "$colour" "$what" "$count_security" "$checked_at" "$checked_by" "$lists"
+        if [ "$count_security" -gt 0 ]
+        then
+            names "Security: " "$security"
+            if [ "$count_other" -gt 0 ]
+            then
+                names "Other: " "$other"
+            fi
+        else
+            names "" "$other"
+        fi
+        if [ -n "$problem" ]
+        then
+            printf '%s\n' "$problem"
+        fi
+        printf '%s' "$reset"
+    } | publish "$FILE"
+fi
+publish "$LAST" < "$FILE"
+
+if [ "$quiet" -eq 0 ]
+then
+    cat "$FILE"
+fi

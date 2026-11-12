@@ -1,0 +1,13 @@
+[Unit]
+Description=Login warnings: run every enabled check after boot
+Documentation=https://github.com/MarcFauser/login-warnings
+# pg-collation queries the PostgreSQL clusters; postgresql.service waits for all of them (each
+# postgresql@.service is Before= it). Without PostgreSQL this ordering has no effect.
+After=postgresql.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/login-warnings --quiet --trigger boot
+
+[Install]
+WantedBy=multi-user.target
