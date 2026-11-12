@@ -56,7 +56,8 @@ jobs:
       - name: Build the archive and the release notes
         if: steps.exists.outputs.exists == 'false'
         run: |
-          git archive --format=tar.gz --prefix=login-warnings/ -o login-warnings.tar.gz HEAD
+          # git archive defaults to tar.umask 0002, which leaves files group-writable (664/775).
+          git -c tar.umask=0022 archive --format=tar.gz --prefix=login-warnings/ -o login-warnings.tar.gz HEAD
           tar -tzf login-warnings.tar.gz
           version=${{ steps.version.outputs.version }}
           awk -v v="$version" '/^## \[/ { if (p) exit; if (index($0, "## [" v "]") == 1) { p = 1; next } } p' CHANGELOG.md > notes.md

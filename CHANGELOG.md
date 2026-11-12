@@ -4,6 +4,15 @@ All notable changes to this project are documented in this file.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project
 uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.3.1] - 2026-11-12
+
+### Fixed
+
+- The release archive no longer unpacks group-writable files (664/775): the workflow runs
+  `git archive` with `tar.umask` 0022 instead of git's default 0002, so the files in
+  `/usr/local/src/login-warnings` get 644/755. The installed files were not affected;
+  `install.sh` sets their modes itself.
+
 ## [3.3.0] - 2026-11-12
 
 ### Added

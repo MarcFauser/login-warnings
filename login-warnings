@@ -31,7 +31,7 @@ PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 cd /
 
 # Version of the whole repository; it must match the newest section in CHANGELOG.md.
-VERSION="3.3.0"
+VERSION="3.3.1"
 
 CONF=/etc/login-warnings.d
 DIR=/run/login-warnings
