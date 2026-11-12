@@ -1,0 +1,73 @@
+#!/bin/sh
+# 90-pg-collation
+#
+# Login banner shown while any PostgreSQL database has a collation version mismatch
+# (typically after a glibc upgrade). Disappears automatically once fixed.
+PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+cd /
+
+query()
+{
+    timeout 5 runuser -u postgres -- psql -XAtq "port=$1 dbname=postgres connect_timeout=2" -c "$2" 2>/dev/null
+}
+
+if command -v pg_lsclusters >/dev/null 2>&1
+then
+    ports=$(pg_lsclusters -h 2>/dev/null | while read -r _ _ port status _
+    do
+        if [ "$status" = "online" ]
+        then
+            echo "$port"
+        fi
+    done)
+else
+    ports=5432
+fi
+
+result=""
+for port in $ports
+do
+    version=$(query "$port" "SHOW server_version_num")
+    if [ -z "$version" ] || [ "$version" -lt 150000 ]
+    then
+        continue
+    fi
+
+    rows=$(query "$port" "
+        SELECT 'port $port, ' || datname || ': '
+               || coalesce(datcollversion, 'none') || ' -> '
+               || coalesce(pg_database_collation_actual_version(oid), 'none')
+        FROM pg_database
+        WHERE datallowconn
+          AND datcollversion IS DISTINCT FROM pg_database_collation_actual_version(oid)")
+    if [ -n "$rows" ]
+    then
+        result="$result$rows
+"
+    fi
+done
+
+if [ -z "$result" ]
+then
+    exit 0
+fi
+
+cat <<EOF
+
+======================================================================
+ PostgreSQL collation version mismatch
+======================================================================
+The collation version of the operating system (glibc) has changed.
+Text indexes may be inconsistent until they are rebuilt.
+
+Affected databases (stored -> current):
+$(printf '%s' "$result" | sed 's/^/  /')
+
+To fix, rebuild the indexes and reboot afterwards:
+  runuser -u postgres -- /usr/local/sbin/pg-collation-fix
+  reboot
+
+While indexes are rebuilt, queries on the affected tables have to wait.
+This message disappears automatically once all databases are fixed.
+
+EOF

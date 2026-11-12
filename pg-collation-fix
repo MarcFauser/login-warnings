@@ -1,0 +1,102 @@
+#!/bin/bash
+# pg-collation-fix
+#
+# Rebuilds all indexes of every database whose stored collation version no longer
+# matches the version reported by the operating system, then records the new version.
+# Covers all online primary clusters running PostgreSQL 15 or newer.
+# Standby servers are skipped; the rebuild on the primary is replicated to them.
+#
+# Usage: runuser -u postgres -- /usr/local/sbin/pg-collation-fix
+#        /usr/local/sbin/pg-collation-fix --version
+set -euo pipefail
+cd /
+
+# Version of the whole repository; it must match the newest section in CHANGELOG.md.
+VERSION="1.0.0"
+
+MISMATCH_SQL="
+    SELECT datname
+    FROM pg_database
+    WHERE datallowconn
+      AND datcollversion IS DISTINCT FROM pg_database_collation_actual_version(oid)"
+
+list_ports()
+{
+    if command -v pg_lsclusters >/dev/null 2>&1
+    then
+        pg_lsclusters -h | while read -r _ _ port status _
+        do
+            if [ "$status" = "online" ]
+            then
+                echo "$port"
+            fi
+        done
+    else
+        echo 5432
+    fi
+}
+
+if [ "${1:-}" = "--version" ]
+then
+    echo "pg-collation-fix $VERSION"
+    exit 0
+fi
+
+if [ "$(id -un)" != "postgres" ]
+then
+    echo "Please run as postgres: runuser -u postgres -- $0" >&2
+    exit 1
+fi
+
+found=0
+failed=""
+for port in $(list_ports)
+do
+    version=$(psql -XAtq -p "$port" -d postgres -c "SHOW server_version_num")
+    if [ "$version" -lt 150000 ]
+    then
+        echo "Port $port: PostgreSQL older than 15, database collation versions are not tracked, skipping."
+        continue
+    fi
+
+    dbs=$(psql -XAtq -p "$port" -d postgres -c "$MISMATCH_SQL")
+    # Read line by line so that database names containing spaces stay intact.
+    while IFS= read -r db
+    do
+        if [ -z "$db" ]
+        then
+            continue
+        fi
+
+        found=1
+        echo "Port $port: rebuilding indexes in database \"$db\"..."
+        # The collation version is only refreshed if the reindex succeeded.
+        if psql -X -v ON_ERROR_STOP=1 -v db="$db" -p "$port" -d "$db" <<'EOF'
+REINDEX DATABASE :"db";
+ALTER DATABASE :"db" REFRESH COLLATION VERSION;
+EOF
+        then
+            echo "Port $port: database \"$db\" done."
+        else
+            echo "Port $port: database \"$db\" FAILED, collation version left unchanged." >&2
+            failed="$failed  port $port, $db
+"
+        fi
+    done <<< "$dbs"
+done
+
+if [ "$found" -eq 0 ]
+then
+    echo "No collation version mismatch found."
+    exit 0
+fi
+
+if [ -n "$failed" ]
+then
+    echo >&2
+    echo "The following databases could not be fixed:" >&2
+    printf '%s' "$failed" >&2
+    echo "If REINDEX failed with a duplicate key error, the changed sort order has let" >&2
+    echo "duplicates into a unique index. Resolve the duplicates and run this script again." >&2
+    exit 1
+fi
