@@ -7,6 +7,7 @@
 #   /etc/systemd/system/pg-collation-check.service  runs the check after every boot
 #   /etc/dpkg/dpkg.cfg.d/pg-collation-check         runs the check after every dpkg run
 #   /etc/profile.d/login-warnings.sh                shows /run/login-warnings/* in every login shell
+#   /etc/login-warnings.d/pg-collation              registers the check, so a missing result is reported
 #
 # Run as root from a checkout of this repository. Safe to run again; existing files are
 # overwritten, which is also how updates are applied. Removes the login banner of version 1.x
@@ -50,6 +51,10 @@ install -m 0755 -o root -g root "$src/pg-collation-fix" /usr/local/sbin/pg-colla
 install -m 0644 -o root -g root "$src/pg-collation-check.service" /etc/systemd/system/pg-collation-check.service
 install -m 0644 -o root -g root "$src/dpkg-pg-collation-check.cfg" /etc/dpkg/dpkg.cfg.d/pg-collation-check
 install -m 0644 -o root -g root "$src/login-warnings.sh" /etc/profile.d/login-warnings.sh
+install -d -m 0755 -o root -g root /etc/login-warnings.d
+printf 'pg-collation-check\n' > /etc/login-warnings.d/pg-collation.tmp
+chmod 0644 /etc/login-warnings.d/pg-collation.tmp
+mv -f /etc/login-warnings.d/pg-collation.tmp /etc/login-warnings.d/pg-collation
 
 systemctl daemon-reload
 systemctl enable --quiet pg-collation-check.service
@@ -60,6 +65,7 @@ echo "  /usr/local/sbin/pg-collation-fix"
 echo "  /etc/systemd/system/pg-collation-check.service (enabled)"
 echo "  /etc/dpkg/dpkg.cfg.d/pg-collation-check"
 echo "  /etc/profile.d/login-warnings.sh"
+echo "  /etc/login-warnings.d/pg-collation"
 if [ -e /etc/update-motd.d/90-pg-collation ]
 then
     rm -f /etc/update-motd.d/90-pg-collation
@@ -74,5 +80,5 @@ then
     echo
 fi
 
-# Shows the warning, or that there is none, and writes /run/login-warnings/pg-collation.
+# Writes /run/login-warnings/pg-collation and shows it: the OK line or the warning.
 /usr/local/sbin/pg-collation-check

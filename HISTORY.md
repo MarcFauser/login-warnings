@@ -129,3 +129,18 @@ Only the repository is renamed. `pg-collation-check`, `pg-collation-fix`, the sy
 the dpkg hook keep their names, as the first check. The framework itself, a common runner that
 executes every check at boot and after dpkg and lets each server choose its checks, waits for
 the second check, so that its interface is not guessed from a single example.
+
+## 2026-11-12 - 2.1.0: never silent
+
+After the fix on the first server the login showed nothing, and the user pointed out that
+nothing can also mean a bug, a check that never really ran. He had asked earlier for the time
+of the last check "egal ob mit oder ohne Warnung"; 2.0.0 put it only into the warning. So the
+removed file was the same mistake as a default value that means all-clear: a missing result
+and a good result looked identical.
+
+Now every state is visible and dated: a green OK line, the orange warning, an orange FAILED
+line followed by the last successful result (the old "keep the previous file" would have kept
+showing a green line while the checks failed), and, for a check registered in
+`/etc/login-warnings.d` without any result file, "no result since boot" with the boot time.
+The trigger ("at boot") stays in the line, and date and time are always there, as the user
+asked.

@@ -4,6 +4,23 @@ All notable changes to this project are documented in this file.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project
 uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.1.0] - 2026-11-12
+
+### Changed
+
+- The login is never silent: without a mismatch `pg-collation-check` writes a green line
+  `PostgreSQL collation versions OK - checked <date time zone> (<trigger>)` instead of removing
+  its file, because an empty login looked exactly like a check that never ran.
+- A failed check (a cluster cannot be queried) writes an orange FAILED line with date and time,
+  followed by the last successful result, instead of silently keeping the old file. The last
+  successful result is kept in `/run/login-warnings/.pg-collation.last`.
+
+### Added
+
+- `/etc/login-warnings.d/pg-collation` registers the check. When a registered check has no
+  result file, the login shell reports `pg-collation: no result since boot (<boot time>).
+  Run: pg-collation-check`.
+
 ## [2.0.1] - 2026-11-12
 
 ### Changed

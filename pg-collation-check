@@ -4,7 +4,9 @@
 # Checks every local PostgreSQL cluster (15 or newer, online, not a standby) for databases
 # whose stored collation version no longer matches the operating system, and writes the
 # result to /run/login-warnings/pg-collation. /etc/profile.d/login-warnings.sh shows that
-# file in every interactive login shell. Without a mismatch the file is removed.
+# file in every interactive login shell. The file always says when the check ran: a green
+# OK line, the orange warning, or an orange FAILED line followed by the last successful
+# result (kept in /run/login-warnings/.pg-collation.last).
 #
 # A database counts as affected when its stored version differs from the version the
 # running server reports, or - for the libc provider - from the glibc installed on disk.
@@ -13,8 +15,8 @@
 #
 # Runs after every boot (pg-collation-check.service) and after every dpkg run
 # (/etc/dpkg/dpkg.cfg.d/pg-collation-check). Run it by hand at any time, as root.
-# If a cluster cannot be queried, the previous result is kept and the exit status is 1,
-# so a failed check never looks like an all-clear.
+# If a cluster cannot be queried, the exit status is 1 and the login shows the failure, so a
+# failed check never looks like an all-clear.
 #
 # Usage: pg-collation-check [--quiet] [--trigger boot|dpkg|manual]
 PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
@@ -22,6 +24,8 @@ cd /
 
 DIR=/run/login-warnings
 FILE=$DIR/pg-collation
+# Hidden from the login display (its glob skips dot files): the last successful result.
+LAST=$DIR/.pg-collation.last
 
 quiet=0
 trigger=manual
@@ -115,28 +119,54 @@ do
     fi
 done
 
-if [ -n "$failed" ]
-then
-    echo "pg-collation-check: could not query the cluster(s) on port(s)$failed; the previous result in $FILE is kept." >&2
-    exit 1
-fi
-
 mkdir -p -m 0755 "$DIR"
 checked_at=$(date '+%Y-%m-%d %H:%M:%S %:z')
 
-if [ -z "$result" ]
+# Orange (index 208 of the 256-colour palette) for problems, green for the all-clear.
+orange=$(printf '\033[38;5;208m')
+green=$(printf '\033[32m')
+reset=$(printf '\033[0m')
+
+# Writes stdin next to the target and renames it, so a login never shows a half-written file.
+publish()
+{
+    cat > "$1.tmp.$$"
+    chmod 0644 "$1.tmp.$$"
+    mv -f "$1.tmp.$$" "$1"
+}
+
+if [ -n "$failed" ]
 then
-    rm -f "$FILE"
+    {
+        printf '%sPostgreSQL collation check FAILED - %s (%s): could not query the cluster on port(s)%s. Check again: pg-collation-check%s\n' \
+            "$orange" "$checked_at" "$checked_by" "$failed" "$reset"
+        if [ -s "$LAST" ]
+        then
+            printf '%sLast successful check:%s\n' "$orange" "$reset"
+            cat "$LAST"
+        else
+            printf '%sNo successful check since boot.%s\n' "$orange" "$reset"
+        fi
+    } | publish "$FILE"
+    echo "pg-collation-check: could not query the cluster(s) on port(s)$failed." >&2
     if [ "$quiet" -eq 0 ]
     then
-        echo "No collation version mismatch found (checked $checked_at)."
+        cat "$FILE"
+    fi
+    exit 1
+fi
+
+if [ -z "$result" ]
+then
+    printf '%sPostgreSQL collation versions OK - checked %s (%s). Check again: pg-collation-check%s\n' \
+        "$green" "$checked_at" "$checked_by" "$reset" | publish "$FILE"
+    publish "$LAST" < "$FILE"
+    if [ "$quiet" -eq 0 ]
+    then
+        cat "$FILE"
     fi
     exit 0
 fi
-
-# Orange (index 208 of the 256-colour palette) so the warning stands out.
-orange=$(printf '\033[38;5;208m')
-reset=$(printf '\033[0m')
 
 # With a newer glibc on disk than the running server uses, a reindex would still sort
 # with the old one, and pg-collation-fix compares with the running server.
@@ -151,9 +181,7 @@ else
   reboot"
 fi
 
-# Written next to the target and renamed, so a login never shows a half-written file.
-tmp="$FILE.tmp.$$"
-cat > "$tmp" <<EOF
+publish "$FILE" <<EOF
 
 ${orange}======================================================================
  PostgreSQL collation version mismatch
@@ -170,8 +198,7 @@ While indexes are rebuilt, queries on the affected tables have to wait.
 Checked $checked_at ($checked_by). Check again: pg-collation-check${reset}
 
 EOF
-chmod 0644 "$tmp"
-mv -f "$tmp" "$FILE"
+publish "$LAST" < "$FILE"
 
 if [ "$quiet" -eq 0 ]
 then

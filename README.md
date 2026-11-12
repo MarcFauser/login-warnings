@@ -32,7 +32,8 @@ A check writes its result into a file, and every interactive login shell shows t
 
 | File | Purpose |
 | --- | --- |
-| `/usr/local/sbin/pg-collation-check` | Checks all local clusters and writes an orange warning with the affected databases, the fix instructions, the time of the check and how to repeat it to `/run/login-warnings/pg-collation`. Removes the file when everything is fine. |
+| `/usr/local/sbin/pg-collation-check` | Checks all local clusters and writes its result to `/run/login-warnings/pg-collation`: a green OK line, or an orange warning with the affected databases and the fix instructions, or an orange FAILED line with the last successful result. Every result names date, time and trigger of the check and how to repeat it. |
+| `/etc/login-warnings.d/pg-collation` | Registers the check. A registered check without a result file has not run since boot, and the login shell says so. |
 | `/etc/systemd/system/pg-collation-check.service` | Runs the check once after every boot, after PostgreSQL has started. |
 | `/etc/dpkg/dpkg.cfg.d/pg-collation-check` | Runs the check after every dpkg run (`post-invoke`), so a glibc or PostgreSQL update shows up at once. |
 | `/etc/profile.d/login-warnings.sh` | Prints every file in `/run/login-warnings` in interactive login shells: in every terminal window, for every user, and never in scripts or file transfers. |
@@ -49,16 +50,25 @@ Run the check by hand at any time:
 pg-collation-check
 ```
 
-If a cluster cannot be queried, the check keeps the previous result and exits with status 1,
-so a failed check never looks like an all-clear. `/run` is emptied at reboot, and the check
-at boot writes the file again.
+What a login shows:
+
+| State | Login shows |
+| --- | --- |
+| everything fine | `PostgreSQL collation versions OK - checked 2026-11-12 21:57:13 +01:00 (at boot). Check again: pg-collation-check` (green) |
+| mismatch | the orange warning, ending with `Checked … (after a package change). Check again: pg-collation-check` |
+| check failed | `PostgreSQL collation check FAILED - … could not query the cluster on port(s) 5432 …`, then the last successful result (orange); exit status 1 |
+| not run since boot | `pg-collation: no result since boot (<boot time>). Run: pg-collation-check` (orange) |
+
+Nothing is ever silent: an empty login would look exactly like an all-clear. `/run` is emptied
+at reboot, and the check at boot writes the file again.
 
 The warning is shown by the login shell and not by the login message (motd): sshd shows the
 login message only once per SSH connection, and clients like Bitvise open further terminal
 windows on the same connection.
 
-`/run/login-warnings` is meant to be shared: other checks can put their own file there and
-remove it once their problem is solved.
+`/run/login-warnings` and `/etc/login-warnings.d` are meant to be shared: another check
+registers itself with a file `/etc/login-warnings.d/<name>` (one line, the command to run it)
+and writes its result to `/run/login-warnings/<name>`.
 
 ## Requirements
 
@@ -136,12 +146,13 @@ clusters) followed by `pg-collation-check`. After a reboot the check runs by its
 ```bash
 systemctl disable --now pg-collation-check.service
 rm -f /etc/systemd/system/pg-collation-check.service /etc/dpkg/dpkg.cfg.d/pg-collation-check \
-      /usr/local/sbin/pg-collation-check /usr/local/sbin/pg-collation-fix /run/login-warnings/pg-collation
+      /usr/local/sbin/pg-collation-check /usr/local/sbin/pg-collation-fix \
+      /etc/login-warnings.d/pg-collation /run/login-warnings/pg-collation /run/login-warnings/.pg-collation.last
 systemctl daemon-reload
 ```
 
-`/etc/profile.d/login-warnings.sh` only shows what is in `/run/login-warnings`; remove it as
-well if no other check uses that directory.
+`/etc/profile.d/login-warnings.sh` only shows what is in `/run/login-warnings` and
+`/etc/login-warnings.d`; remove it and both directories as well if no other check uses them.
 
 ## Development
 
