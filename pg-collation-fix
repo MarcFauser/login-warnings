@@ -12,7 +12,7 @@ set -euo pipefail
 cd /
 
 # Version of the whole repository; it must match the newest section in CHANGELOG.md.
-VERSION="2.0.0"
+VERSION="2.0.1"
 
 MISMATCH_SQL="
     SELECT datname

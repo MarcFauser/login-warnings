@@ -1,8 +1,14 @@
-# pg-collation-check
+# login-warnings
 
-Login warning and fix script for PostgreSQL collation version mismatches on Debian.
+Warnings that every interactive login shell on a Debian server shows, in every terminal
+window. A check writes its warning into `/run/login-warnings` and removes it once the problem
+is solved.
 
-## Background
+The first and so far only check, `pg-collation-check`, reports PostgreSQL collation version
+mismatches and comes with a fix script. Further checks are planned; when the second one
+arrives, the checks will get a common runner.
+
+## Background: PostgreSQL collation versions
 
 PostgreSQL databases using the libc collation provider record the glibc collation
 version they were created with. After a glibc upgrade, typically a Debian release
@@ -72,23 +78,29 @@ installed version and the current status. Run it again after every update.
 With git (on a minimal installation, `apt install git` first):
 
 ```bash
-git clone https://github.com/MarcFauser/pg-collation-check.git /usr/local/src/pg-collation-check
-bash /usr/local/src/pg-collation-check/install.sh
+git clone https://github.com/MarcFauser/login-warnings.git /usr/local/src/login-warnings
+bash /usr/local/src/login-warnings/install.sh
 ```
 
 Update:
 
 ```bash
-git -C /usr/local/src/pg-collation-check pull
-bash /usr/local/src/pg-collation-check/install.sh
+git -C /usr/local/src/login-warnings pull
+bash /usr/local/src/login-warnings/install.sh
 ```
 
-Without git:
+Without git, for the first installation and every update (the old folder is removed first,
+so files dropped from the repository do not stay behind):
 
 ```bash
-wget -qO- https://github.com/MarcFauser/pg-collation-check/archive/refs/heads/main.tar.gz | tar -xz -C /usr/local/src
-bash /usr/local/src/pg-collation-check-main/install.sh
+rm -rf /usr/local/src/login-warnings-main
+wget -qO- https://github.com/MarcFauser/login-warnings/archive/refs/heads/main.tar.gz | tar -xz -C /usr/local/src
+bash /usr/local/src/login-warnings-main/install.sh
 ```
+
+Up to version 2.0.0 the repository was called `pg-collation-check`. On a server installed
+from it, remove `/usr/local/src/pg-collation-check` or `/usr/local/src/pg-collation-check-main`
+and install from the new location; the installed files keep their names.
 
 To see which version is installed:
 

@@ -4,6 +4,22 @@ All notable changes to this project are documented in this file.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project
 uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.0.1] - 2026-11-12
+
+### Changed
+
+- The repository is renamed from `pg-collation-check` to `login-warnings`, because further
+  checks are to follow; `pg-collation-check` stays the name of the first check. The README
+  installs to `/usr/local/src/login-warnings` and explains how to move a server installed
+  from the old name. The installed files keep their names; only comments and the
+  `Documentation=` link of the systemd unit change.
+
+### Fixed
+
+- README: the installation without git now removes the old folder before extracting, so files
+  dropped from the repository do not stay behind (`90-pg-collation` remained after the update
+  from 1.0.0).
+
 ## [2.0.0] - 2026-11-12
 
 ### Changed

@@ -115,3 +115,17 @@ login show the file. That replaced the first answer before it was committed:
 
 The trade-off: the warning shows the state of the last check, not of the moment of login.
 Version 2.0.0, because the login message goes away and systemd and dpkg parts come in.
+
+## 2026-11-12 - renamed to login-warnings
+
+With the shared `/run/login-warnings` in place, the user wanted the repository named after the
+whole idea rather than its first check, so that further checks can join it. He suggested
+something like "MOTD server checks framework"; "MOTD" was left out because since 2.0.0 the
+warning deliberately does not come from the login message, and `login-warnings` matches the
+directory and the profile.d script that already carry the name. The repository was renamed on
+GitHub (redirects from the old name do not matter: nobody else uses it) and locally.
+
+Only the repository is renamed. `pg-collation-check`, `pg-collation-fix`, the systemd unit and
+the dpkg hook keep their names, as the first check. The framework itself, a common runner that
+executes every check at boot and after dpkg and lets each server choose its checks, waits for
+the second check, so that its interface is not guessed from a single example.
