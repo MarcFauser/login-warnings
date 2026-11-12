@@ -4,6 +4,20 @@ All notable changes to this project are documented in this file.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project
 uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.3.0] - 2026-11-12
+
+### Added
+
+- Self-check: after every apt update and when run by hand, `login-warnings` reads the latest
+  release from the redirect of `/releases/latest` (curl or wget, 10 seconds at most, nothing is
+  downloaded) and keeps it in `/var/lib/login-warnings/latest-release`. A newer release shows
+  as an orange section `login-warnings: <version> available` with `login-warnings update`.
+
+### Changed
+
+- The frame names the installed version at the top (`----- login-warnings 3.3.0 ---`) and at
+  the bottom when the latest release was last checked, or that it never was.
+
 ## [3.2.0] - 2026-11-12
 
 ### Added

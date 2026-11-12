@@ -220,3 +220,19 @@ so the README and `login-warnings update` use that.
   download-and-run one-liner. It downloads only from this repository's releases, unpacks next
   to the installed copy, shows the CHANGELOG sections that are new, and only then replaces the
   copy and runs `install.sh`. It refuses to install an older release over a newer version.
+
+## 2026-11-12 - 3.3.0: knowing when an update is due
+
+The user asked about two ways to learn about new versions: an apt package like caddy-deb, or a
+self-check. The apt package was put aside for now: Debian Policy 9.1.2 forbids packages to place
+files in `/usr/local`, so every path would move, the files under `/etc` would become conffiles
+while the switches in `/etc/login-warnings.d` must not, and every server would need the package
+source and its signing key. For a handful of servers the self-check gives the same
+information with what already exists.
+
+It runs where the network is expected anyway, after the daily apt update, and when run by hand;
+never at login, at boot or after dpkg. It reads only the redirect of `/releases/latest`
+(measured on the server: curl reports it as `redirect_url`, wget prints the `Location:` header
+and exits with 8 because it is told not to follow). A failed look keeps the old answer, and the
+closing line of the frame shows when the last successful look was, so a silent failure ages
+visibly instead of reading as "up to date".

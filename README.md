@@ -5,7 +5,7 @@ window. Each check writes one section of the display into `/run/login-warnings`,
 the time it ran: green when all is well, orange when something needs attention.
 
 ```
------ login-warnings ---------------------------------------------------
+----- login-warnings 3.3.0 ---------------------------------------------
 Package updates: 3 (0 security)
   libpq5 postgresql-18 postgresql-client-common
   show: apt list --upgradable
@@ -17,7 +17,7 @@ PostgreSQL collation: OK
   checked 2026-11-12 22:43:09 +01:00 (at boot)
   check again: pg-collation-check
 
-------------------------------------------------------------------------
+----- latest release checked 2026-11-12 23:06:35 +01:00 ----------------
 ```
 
 Every line stays below 80 columns, so nothing wraps in a normal terminal window.
@@ -42,7 +42,7 @@ Two checks so far:
 | `/usr/local/sbin/apt-updates-check` | The `apt-updates` check; writes `/run/login-warnings/apt-updates`. |
 | `/usr/local/sbin/pg-collation-check` | The `pg-collation` check; writes `/run/login-warnings/pg-collation`. |
 | `/usr/local/sbin/pg-collation-fix` | Runs `REINDEX DATABASE` on every affected database, then `ALTER DATABASE ... REFRESH COLLATION VERSION`. The version is only refreshed if the reindex succeeded. |
-| `/var/lib/login-warnings` | When the last apt update started and when it last reached a repository. |
+| `/var/lib/login-warnings` | When the last apt update started and when it last reached a repository; the latest release and when it was checked. |
 
 Nothing is ever silent: an empty login would look exactly like an all-clear. Every section
 names date, time and trigger of its check (at boot, after a package change, after apt update,
@@ -202,6 +202,27 @@ login-warnings update
 It downloads the latest release, shows the CHANGELOG sections since the installed version,
 puts the release in place of `/usr/local/src/login-warnings` and runs its `install.sh`. If the
 installed version is the latest one, or newer, it changes nothing.
+
+You see at login when an update is due. After every apt update and when run by hand,
+`login-warnings` asks GitHub which release is the latest (it reads the redirect of
+`/releases/latest`, downloads nothing) and keeps the answer in
+`/var/lib/login-warnings/latest-release`. The frame then names the installed version at the
+top, a newer release in an orange section, and at the bottom when the latest release was last
+checked:
+
+```
+----- login-warnings 3.3.0 ---------------------------------------------
+...
+
+login-warnings: 3.4.0 available
+  installed: 3.3.0
+  update: login-warnings update
+
+----- latest release checked 2026-11-12 23:06:35 +01:00 ----------------
+```
+
+A login itself never goes online. If GitHub cannot be reached, the old answer stays and the
+date at the bottom shows its age.
 
 Servers installed before 3.2.0 have no `update` yet: remove the old source folders once
 (`/usr/local/src/login-warnings`, `/usr/local/src/login-warnings-main`, and from the time the
