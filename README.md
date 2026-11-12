@@ -1,8 +1,26 @@
 # login-warnings
 
 Warnings that every interactive login shell on a Debian server shows, in every terminal
-window. Each check writes its result into `/run/login-warnings`, always with the time it ran:
-a green line when all is well, an orange warning when something needs attention.
+window. Each check writes one section of the display into `/run/login-warnings`, always with
+the time it ran: green when all is well, orange when something needs attention.
+
+```
+----- login-warnings ---------------------------------------------------
+Package updates: 3 (0 security)
+  libpq5 postgresql-18 postgresql-client-common
+  show: apt list --upgradable
+  lists from 2026-11-12 21:53:09 +01:00 (50 min ago)
+  checked 2026-11-12 22:43:09 +01:00 (at boot)
+  check again: apt-updates-check
+
+PostgreSQL collation: OK
+  checked 2026-11-12 22:43:09 +01:00 (at boot)
+  check again: pg-collation-check
+
+------------------------------------------------------------------------
+```
+
+Every line stays below 80 columns, so nothing wraps in a normal terminal window.
 
 Two checks so far:
 
@@ -20,16 +38,17 @@ Two checks so far:
 | `/etc/systemd/system/login-warnings.service` | Runs every enabled check once after every boot, after PostgreSQL has started. |
 | `/etc/dpkg/dpkg.cfg.d/login-warnings` | Runs every enabled check after every dpkg run (`post-invoke`). |
 | `/etc/apt/apt.conf.d/80login-warnings` | Refreshes the package lists once a day and runs every enabled check after every apt update. |
-| `/etc/profile.d/login-warnings.sh` | Runs `login-warnings show` in interactive login shells: in every terminal window, for every user, and never in scripts or file transfers. |
+| `/etc/profile.d/login-warnings.sh` | Runs `login-warnings show` in interactive login shells: in every terminal window, for every user, and never in scripts or file transfers. `show` puts the sections of all enabled checks into one frame. |
 | `/usr/local/sbin/apt-updates-check` | The `apt-updates` check; writes `/run/login-warnings/apt-updates`. |
 | `/usr/local/sbin/pg-collation-check` | The `pg-collation` check; writes `/run/login-warnings/pg-collation`. |
 | `/usr/local/sbin/pg-collation-fix` | Runs `REINDEX DATABASE` on every affected database, then `ALTER DATABASE ... REFRESH COLLATION VERSION`. The version is only refreshed if the reindex succeeded. |
 | `/var/lib/login-warnings` | When the last apt update started and when it last reached a repository. |
 
-Nothing is ever silent: an empty login would look exactly like an all-clear. Every result
+Nothing is ever silent: an empty login would look exactly like an all-clear. Every section
 names date, time and trigger of its check (at boot, after a package change, after apt update,
-by hand) and how to repeat it. A check that fails says so in orange and shows its last
-successful result below. An enabled check without any result says "no result since boot".
+by hand) and how to repeat it. A check that fails shows `CHECK FAILED` in orange and its last
+successful result below. An enabled check without any result shows `NO RESULT` with the boot
+time.
 `/run` is emptied at reboot, and the run at boot writes the results again.
 
 The warnings come from the login shell and not from the login message (motd): sshd shows the
@@ -72,15 +91,18 @@ without locking and without writing apt's cache files, so it can run while apt o
 working. It runs after every apt update (by hand or from the timer), after every dpkg run (so
 installed updates leave the list) and at boot.
 
-| State | Login shows |
+| State | Section |
 | --- | --- |
-| no updates | `No package updates - checked 2026-11-12 22:29:32 +01:00 (by hand), lists from 2026-11-11 22:29:32 +01:00 (24 h ago). Check again: apt-updates-check` (green) |
-| updates | `7 package updates (0 security) - checked 2026-11-12 22:35:20 +01:00 (after apt update), lists from 2026-11-12 22:35:19 +01:00 (0 min ago). Show: apt list --upgradable. Check again: apt-updates-check`, then the package names (plain) |
-| security updates among them | the same, with the security updates listed first (orange) |
-| last apt update reached no repository or did not finish | an orange line under the result |
-| lists older than two days | an orange line: the daily refresh has not run |
-| no apt update since installation | an orange line asking for `apt update` |
-| check failed | `Package update check FAILED - …` with apt's error, then the last successful result (orange); exit status 1 |
+| no updates | `Package updates: none` (green) |
+| updates | `Package updates: 3 (0 security)`, the package names (plain) |
+| security updates among them | `Package updates: 3 (2 security)`, a `security:` and an `other:` line (orange) |
+| last apt update reached no repository or did not finish | an extra line saying so (orange) |
+| lists older than two days | an extra line: the daily apt update has not run (orange) |
+| no apt update since installation | an extra line asking for `apt update` (orange) |
+| check failed | `Package updates: CHECK FAILED` with apt's error, then the last successful result (orange); exit status 1 |
+
+Below the title every section shows how old the lists are, when the check ran and how to run
+it again.
 
 Two days is the limit for old lists because `apt.systemd.daily` refreshes once per calendar
 day and `apt-daily.timer` (6:00 and 18:00, up to 12 hours random delay) runs at least once
@@ -115,11 +137,12 @@ the running server reports, or, for the libc provider, from the glibc installed 
 The second catches a glibc update before PostgreSQL is restarted; the warning then asks for
 a reboot or a PostgreSQL restart first.
 
-| State | Login shows |
+| State | Section |
 | --- | --- |
-| everything fine | `PostgreSQL collation versions OK - checked 2026-11-12 21:57:13 +01:00 (at boot). Check again: pg-collation-check` (green) |
-| mismatch | the orange warning, ending with `Checked … (after a package change). Check again: pg-collation-check` |
-| check failed | `PostgreSQL collation check FAILED - … could not query the cluster on port(s) 5432 …`, then the last successful result (orange); exit status 1 |
+| everything fine | `PostgreSQL collation: OK` (green) |
+| mismatch | `PostgreSQL collation: VERSION MISMATCH` with the affected databases and the fix (orange) |
+| glibc on disk newer than the running server | the same, with `(glibc on disk: 2.41)` behind the database and the advice to reboot or restart PostgreSQL first (orange) |
+| check failed | `PostgreSQL collation: CHECK FAILED`, the port, then the last successful result (orange); exit status 1 |
 
 Requirements: PostgreSQL 15 or newer from the Debian or PGDG packages; older versions do not
 track the collation version per database and are skipped. Standby clusters are skipped; the
@@ -214,8 +237,10 @@ lists.
 
 A check is a command `/usr/local/sbin/<check>-check` that accepts `--quiet` and
 `--trigger boot|dpkg|apt|manual`, writes its result to `/run/login-warnings/<check>` and keeps
-any helper files as `/run/login-warnings/.<check>.*`. The result always names the time of the
-check. `login-warnings enable <check>` registers it.
+any helper files as `/run/login-warnings/.<check>.*`. The result is one section: a title line
+`<Title>: <STATE>`, the details indented by two spaces, every line below 80 columns, one colour
+for the whole section, and always the time of the check. `login-warnings enable <check>`
+registers it.
 
 ## Development
 

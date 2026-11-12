@@ -4,9 +4,9 @@
 # Checks every local PostgreSQL cluster (15 or newer, online, not a standby) for databases
 # whose stored collation version no longer matches the operating system, and writes the
 # result to /run/login-warnings/pg-collation. login-warnings shows that file in every
-# interactive login shell. The file always says when the check ran: a green
-# OK line, the orange warning, or an orange FAILED line followed by the last successful
-# result (kept in /run/login-warnings/.pg-collation.last).
+# interactive login shell, as one section of its display. The file always says when the check
+# ran: green "OK", the orange "VERSION MISMATCH" with the fix, or an orange "CHECK FAILED"
+# followed by the last successful result (kept in /run/login-warnings/.pg-collation.last).
 #
 # A database counts as affected when its stored version differs from the version the
 # running server reports, or - for the libc provider - from the glibc installed on disk.
@@ -102,7 +102,7 @@ do
                || coalesce(pg_database_collation_actual_version(oid), 'none')
                || CASE WHEN datlocprovider = 'c' AND '$installed' <> ''
                             AND pg_database_collation_actual_version(oid) IS DISTINCT FROM '$installed'
-                       THEN ' (glibc $installed installed, applies after the next PostgreSQL restart)'
+                       THEN ' (glibc on disk: $installed)'
                        ELSE '' END
         FROM pg_database
         WHERE datallowconn
@@ -136,19 +136,22 @@ publish()
     mv -f "$1.tmp.$$" "$1"
 }
 
+# The result is one section of the login display: a title line with the state, the details
+# indented by two spaces, lines kept below 80 columns, one colour for the whole section.
+footer="  checked $checked_at ($checked_by)
+  check again: pg-collation-check"
+
 if [ -n "$failed" ]
 then
-    {
-        printf '%sPostgreSQL collation check FAILED - %s (%s): could not query the cluster on port(s)%s. Check again: pg-collation-check%s\n' \
-            "$orange" "$checked_at" "$checked_by" "$failed" "$reset"
-        if [ -s "$LAST" ]
-        then
-            printf '%sLast successful check:%s\n' "$orange" "$reset"
-            cat "$LAST"
-        else
-            printf '%sNo successful check since boot.%s\n' "$orange" "$reset"
-        fi
-    } | publish "$FILE"
+    if [ -s "$LAST" ]
+    then
+        last="  last successful check:
+$(sed 's/^/    /' "$LAST")"
+    else
+        last="  no successful check since boot"
+    fi
+    printf '%sPostgreSQL collation: CHECK FAILED\n  could not query the cluster on port(s)%s\n%s\n%s%s\n' \
+        "$orange" "$failed" "$footer" "$last" "$reset" | publish "$FILE"
     echo "pg-collation-check: could not query the cluster(s) on port(s)$failed." >&2
     if [ "$quiet" -eq 0 ]
     then
@@ -159,8 +162,7 @@ fi
 
 if [ -z "$result" ]
 then
-    printf '%sPostgreSQL collation versions OK - checked %s (%s). Check again: pg-collation-check%s\n' \
-        "$green" "$checked_at" "$checked_by" "$reset" | publish "$FILE"
+    printf '%sPostgreSQL collation: OK\n%s%s\n' "$green" "$footer" "$reset" | publish "$FILE"
     publish "$LAST" < "$FILE"
     if [ "$quiet" -eq 0 ]
     then
@@ -171,33 +173,26 @@ fi
 
 # With a newer glibc on disk than the running server uses, a reindex would still sort
 # with the old one, and pg-collation-fix compares with the running server.
-if printf '%s' "$result" | grep -q 'applies after the next PostgreSQL restart'
+if printf '%s' "$result" | grep -q '(glibc on disk: '
 then
-    advice="PostgreSQL still runs with the old glibc. Reboot first, or restart PostgreSQL
-(systemctl restart postgresql) and run pg-collation-check; the warning then shows
-which databases need the fix."
+    advice="  PostgreSQL still runs with the old glibc. Reboot first, or restart
+  PostgreSQL (systemctl restart postgresql) and run pg-collation-check;
+  the warning then shows which databases need the fix."
 else
-    advice="To fix, rebuild the indexes and reboot afterwards:
-  runuser -u postgres -- /usr/local/sbin/pg-collation-fix
-  reboot"
+    advice="  To fix, rebuild the indexes and reboot afterwards:
+    runuser -u postgres -- /usr/local/sbin/pg-collation-fix
+    reboot"
 fi
 
 publish "$FILE" <<EOF
-
-${orange}======================================================================
- PostgreSQL collation version mismatch
-======================================================================
-The collation version of the operating system (glibc) has changed.
-Text indexes may be inconsistent until they are rebuilt.
-
-Affected databases (stored -> current):
-$(printf '%s' "$result" | sed 's/^/  /')
-
+${orange}PostgreSQL collation: VERSION MISMATCH
+  The collation version of the operating system (glibc) has changed.
+  Text indexes may be inconsistent until they are rebuilt.
+  Affected databases (stored -> current):
+$(printf '%s' "$result" | sed 's/^/    /')
 $advice
-
-While indexes are rebuilt, queries on the affected tables have to wait.
-Checked $checked_at ($checked_by). Check again: pg-collation-check${reset}
-
+  While indexes are rebuilt, queries on the affected tables have to wait.
+$footer${reset}
 EOF
 publish "$LAST" < "$FILE"
 

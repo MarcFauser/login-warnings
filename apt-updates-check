@@ -3,10 +3,10 @@
 #
 # Lists the package updates the package lists on disk offer and writes them to
 # /run/login-warnings/apt-updates; login-warnings shows that file in every interactive login
-# shell. The file always says when the check ran and how old the package lists are: a green
-# line without updates, the updates by name (orange when security updates are among them), or
-# an orange FAILED line followed by the last successful result (kept in
-# /run/login-warnings/.apt-updates.last).
+# shell, as one section of its display. The file always says when the check ran and how old
+# the package lists are: green "none", the updates by name (orange when security updates are
+# among them or the lists are in doubt), or an orange "CHECK FAILED" followed by the last
+# successful result (kept in /run/login-warnings/.apt-updates.last).
 #
 # Nothing is downloaded. The check simulates "apt-get dist-upgrade" without locking and
 # without writing apt's cache files, so it is safe while apt or dpkg is running. The lists
@@ -105,9 +105,9 @@ format_time()
     date -d "@$1" '+%Y-%m-%d %H:%M:%S %:z'
 }
 
-sim_ok=1
+sim_status=0
 sim=$(LC_ALL=C timeout 60 apt-get -s -o Debug::NoLocking=1 -o Dir::Cache::pkgcache= \
-    -o Dir::Cache::srcpkgcache= dist-upgrade 2>&1) || sim_ok=0
+    -o Dir::Cache::srcpkgcache= dist-upgrade 2>&1) || sim_status=$?
 
 mkdir -p -m 0755 "$DIR"
 checked_at=$(date '+%Y-%m-%d %H:%M:%S %:z')
@@ -118,21 +118,38 @@ orange=$(printf '\033[38;5;208m')
 green=$(printf '\033[32m')
 reset=$(printf '\033[0m')
 
-if [ "$sim_ok" -eq 0 ]
+# Text wrapped below 80 columns and indented by the given prefix.
+wrap()
+{
+    fold -s -w 76 | sed 's/ *$//' | sed "s/^/$1/"
+}
+
+# The result is one section of the login display: a title line with the state, the details
+# indented by two spaces, lines kept below 80 columns, one colour for the whole section.
+footer="  checked $checked_at ($checked_by)
+  check again: apt-updates-check"
+
+if [ "$sim_status" -ne 0 ]
 then
-    {
-        printf '%sPackage update check FAILED - %s (%s): apt-get could not simulate the upgrade. Check again: apt-updates-check\n' \
-            "$orange" "$checked_at" "$checked_by"
-        printf '%s\n' "$sim" | grep '^E:' | head -n 3 | sed 's/^/  /'
-        printf '%s' "$reset"
-        if [ -s "$LAST" ]
+    if [ "$sim_status" -eq 124 ]
+    then
+        errors="    did not finish within 60 seconds"
+    else
+        errors=$(printf '%s\n' "$sim" | grep '^E:' | head -n 3 | wrap '    ')
+        if [ -z "$errors" ]
         then
-            printf '%sLast successful check:%s\n' "$orange" "$reset"
-            cat "$LAST"
-        else
-            printf '%sNo successful check since boot.%s\n' "$orange" "$reset"
+            errors="    exit status $sim_status"
         fi
-    } | publish "$FILE"
+    fi
+    if [ -s "$LAST" ]
+    then
+        last="  last successful check:
+$(sed 's/^/    /' "$LAST")"
+    else
+        last="  no successful check since boot"
+    fi
+    printf '%sPackage updates: CHECK FAILED\n  apt-get could not simulate the upgrade:\n%s\n%s\n%s%s\n' \
+        "$orange" "$errors" "$footer" "$last" "$reset" | publish "$FILE"
     echo "apt-updates-check: apt-get -s dist-upgrade failed." >&2
     if [ "$quiet" -eq 0 ]
     then
@@ -168,9 +185,9 @@ then
     else
         ago="$((age / 86400)) days ago"
     fi
-    lists="lists from $(format_time "$success") ($ago)"
+    lists="  lists from $(format_time "$success") ($ago)"
 else
-    lists="lists of unknown age"
+    lists="  lists of unknown age"
 fi
 
 # An apt update that started after the last fetched repository has failed or is still running.
@@ -181,71 +198,53 @@ fi
 problem=""
 if [ -n "$start" ] && { [ -z "$success" ] || [ "$success" -lt "$start" ]; }
 then
-    problem="The apt update started $(format_time "$start") reached no repository or did not finish. Run apt update to see why."
+    problem="the apt update started $(format_time "$start") reached no repository or did not finish; run apt update to see why"
 elif [ -z "$success" ]
 then
-    problem="No apt update recorded since login-warnings 3 was installed, so the lists may be old. Run: apt update"
+    problem="no apt update recorded since login-warnings 3 was installed; run: apt update"
 elif [ "$age" -ge 172800 ]
 then
-    problem="The package lists were last refreshed $ago, so the daily apt update has not run since. Check: systemctl status apt-daily.timer apt-daily.service"
+    problem="the daily apt update has not run since; check: systemctl status apt-daily.timer"
 fi
 
-# "<label> name name ...", wrapped and indented by two spaces.
-names()
-{
-    printf '%s%s\n' "$1" "$(printf '%s\n' "$2" | tr '\n' ' ')" | fold -s -w 76 | sed 's/ *$//; s/^/  /'
-}
-
-if [ "$count" -eq 0 ]
+# Pending updates alone are no reason for alarm: plain, unless security updates or a problem
+# with the lists make it orange; green when there is nothing to do.
+if [ "$count_security" -gt 0 ] || [ -n "$problem" ]
 then
-    if [ -n "$problem" ]
-    then
-        colour=$orange
-    else
-        colour=$green
-    fi
-    {
-        printf '%sNo package updates - checked %s (%s), %s. Check again: apt-updates-check%s\n' \
-            "$colour" "$checked_at" "$checked_by" "$lists" "$reset"
-        if [ -n "$problem" ]
-        then
-            printf '%s%s%s\n' "$orange" "$problem" "$reset"
-        fi
-    } | publish "$FILE"
+    colour=$orange
+elif [ "$count" -eq 0 ]
+then
+    colour=$green
 else
-    # Plain without security updates: pending updates alone are no reason for alarm.
-    if [ "$count_security" -gt 0 ] || [ -n "$problem" ]
+    colour=""
+fi
+
+{
+    printf '%s' "$colour"
+    if [ "$count" -eq 0 ]
     then
-        colour=$orange
+        echo "Package updates: none"
     else
-        colour=""
-    fi
-    if [ "$count" -eq 1 ]
-    then
-        what="1 package update"
-    else
-        what="$count package updates"
-    fi
-    {
-        printf '%s%s (%s security) - checked %s (%s), %s. Show: apt list --upgradable. Check again: apt-updates-check\n' \
-            "$colour" "$what" "$count_security" "$checked_at" "$checked_by" "$lists"
+        echo "Package updates: $count ($count_security security)"
         if [ "$count_security" -gt 0 ]
         then
-            names "Security: " "$security"
+            printf 'security: %s\n' "$(printf '%s\n' "$security" | tr '\n' ' ')" | wrap '  '
             if [ "$count_other" -gt 0 ]
             then
-                names "Other: " "$other"
+                printf 'other: %s\n' "$(printf '%s\n' "$other" | tr '\n' ' ')" | wrap '  '
             fi
         else
-            names "" "$other"
+            printf '%s\n' "$(printf '%s\n' "$other" | tr '\n' ' ')" | wrap '  '
         fi
-        if [ -n "$problem" ]
-        then
-            printf '%s\n' "$problem"
-        fi
-        printf '%s' "$reset"
-    } | publish "$FILE"
-fi
+        echo "  show: apt list --upgradable"
+    fi
+    echo "$lists"
+    if [ -n "$problem" ]
+    then
+        printf '%s\n' "$problem" | wrap '  '
+    fi
+    printf '%s%s\n' "$footer" "$reset"
+} | publish "$FILE"
 publish "$LAST" < "$FILE"
 
 if [ "$quiet" -eq 0 ]

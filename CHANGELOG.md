@@ -4,6 +4,20 @@ All notable changes to this project are documented in this file.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project
 uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.1.0] - 2026-11-12
+
+### Changed
+
+- The login display is framed: `----- login-warnings -----` above, a line of dashes below,
+  one section per check with an empty line between them.
+- Every check writes one section: a title line with the state (`Package updates: 3 (0
+  security)`, `PostgreSQL collation: OK`, `VERSION MISMATCH`, `CHECK FAILED`), the details
+  indented by two spaces, and every line below 80 columns, instead of one long line that the
+  terminal wrapped. A failed check indents its last successful result below it.
+- The collation mismatch is no longer a separate banner with `====` lines but a section like
+  the others; a newer glibc on disk is shown as `(glibc on disk: 2.41)` behind the database.
+- A registered check without a result shows `<check>: NO RESULT` with the boot time.
+
 ## [3.0.0] - 2026-11-12
 
 ### Added

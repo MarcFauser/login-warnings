@@ -25,7 +25,7 @@ PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 cd /
 
 # Version of the whole repository; it must match the newest section in CHANGELOG.md.
-VERSION="3.0.0"
+VERSION="3.1.0"
 
 CONF=/etc/login-warnings.d
 DIR=/run/login-warnings
@@ -84,20 +84,37 @@ boot_time()
     date -d "@$(awk '/^btime/ { print $2 }' /proc/stat)" '+%Y-%m-%d %H:%M:%S %:z' 2>/dev/null
 }
 
+# One section per enabled check inside a frame, separated by empty lines. Each check writes
+# its own section; a check without a result gets one here.
 show()
 {
+    names=$(enabled)
+    if [ -z "$names" ]
+    then
+        return 0
+    fi
     orange=$(printf '\033[38;5;208m')
     reset=$(printf '\033[0m')
-    for name in $(enabled)
+    echo
+    echo "----- login-warnings ---------------------------------------------------"
+    first=1
+    for name in $names
     do
+        if [ "$first" -eq 0 ]
+        then
+            echo
+        fi
+        first=0
         if [ -f "$DIR/$name" ] && [ -s "$DIR/$name" ]
         then
             cat "$DIR/$name"
         else
-            printf '%s%s: no result since boot (%s). Run: %s%s\n' \
+            printf '%s%s: NO RESULT\n  no result since boot (%s)\n  run: %s%s\n' \
                 "$orange" "$name" "$(boot_time)" "$(head -n 1 "$CONF/$name")" "$reset"
         fi
     done
+    echo
+    echo "------------------------------------------------------------------------"
 }
 
 # Runs one enabled check quietly; returns 1 if it cannot be run or fails.

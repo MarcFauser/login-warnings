@@ -186,3 +186,16 @@ harmless, and the runner needs no rules per check.
 
 Version 3.0.0, because the systemd unit and the dpkg hook change their names and the version
 moves from `pg-collation-fix` to `login-warnings`.
+
+## 2026-11-12 - 3.1.0: a frame and one section per check
+
+Before 3.0.0 was pushed, the user looked at the login in Bitvise: the update line ran past the
+window edge and wrapped in the middle of a word, and the two results did not read as belonging
+together. The user sketched a frame with a header, one titled block per check and a closing
+line. That is now the display: `login-warnings show` draws the frame, and every check writes
+one section with a title line carrying the state and indented details below 80 columns. The
+collation mismatch lost its own `====` banner, because inside the frame a second frame was
+noise. All six states (updates, none, security updates with a mismatch, a failed apt update
+with a newer glibc on disk, both checks failing, a missing result) were rendered on the server
+from the shipped scripts with fake `apt-get`, `runuser` and `pg_lsclusters` in a temporary
+folder, so the rare states were seen before anyone meets them at a login.
