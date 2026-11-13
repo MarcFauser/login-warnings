@@ -14,6 +14,7 @@ Package updates: 3 (0 security)
   check again: apt-updates-check
 
 PostgreSQL collation: OK
+  clusters: port 5432
   checked 2026-11-12 22:43:09 +01:00 (at boot)
   check again: pg-collation-check
 
@@ -27,7 +28,7 @@ Two checks so far:
 | Check | Reports |
 | --- | --- |
 | `apt-updates` | Package updates offered by the package lists, by name, security updates separately, and how old the lists are. |
-| `pg-collation` | PostgreSQL databases whose collation version no longer matches glibc, with a fix script. |
+| `pg-collation` | PostgreSQL databases whose collation version no longer matches glibc, with a fix script. Covers the Debian/PGDG clusters and the PostgreSQL bundled with the GitLab Linux package. |
 
 ## How it works
 
@@ -35,13 +36,13 @@ Two checks so far:
 | --- | --- |
 | `/usr/local/sbin/login-warnings` | Runs every enabled check, shows the results, switches checks on and off, installs updates. |
 | `/etc/login-warnings.d/<check>` | One file per enabled check; its first line is the command that runs it. `<check>.off` is a check that is switched off. |
-| `/etc/systemd/system/login-warnings.service` | Runs every enabled check once after every boot, after PostgreSQL has started. |
+| `/etc/systemd/system/login-warnings.service` | Runs every enabled check once after every boot, after PostgreSQL has started (and after `gitlab-runsvdir.service`, which starts GitLab's PostgreSQL). |
 | `/etc/dpkg/dpkg.cfg.d/login-warnings` | Runs every enabled check after every dpkg run (`post-invoke`). |
 | `/etc/apt/apt.conf.d/80login-warnings` | Refreshes the package lists once a day and runs every enabled check after every apt update. |
 | `/etc/profile.d/login-warnings.sh` | Runs `login-warnings show` in interactive login shells: in every terminal window, for every user, and never in scripts or file transfers. `show` puts the sections of all enabled checks into one frame. |
 | `/usr/local/sbin/apt-updates-check` | The `apt-updates` check; writes `/run/login-warnings/apt-updates`. |
 | `/usr/local/sbin/pg-collation-check` | The `pg-collation` check; writes `/run/login-warnings/pg-collation`. |
-| `/usr/local/sbin/pg-collation-fix` | Runs `REINDEX DATABASE` on every affected database, then `ALTER DATABASE ... REFRESH COLLATION VERSION`. The version is only refreshed if the reindex succeeded. |
+| `/usr/local/sbin/pg-collation-fix` | Runs `REINDEX DATABASE` on every affected database, then `ALTER DATABASE ... REFRESH COLLATION VERSION`. The version is only refreshed if the reindex succeeded. With `--gitlab` it works on GitLab's bundled PostgreSQL. |
 | `/var/lib/login-warnings` | When the last apt update started and when it last reached a repository; the latest release and when it was checked. |
 
 Nothing is ever silent: an empty login would look exactly like an all-clear. Every section
@@ -57,7 +58,8 @@ windows on the same connection.
 
 ## Choosing the checks
 
-`install.sh` switches on `apt-updates` and, if PostgreSQL is installed locally, `pg-collation`.
+`install.sh` switches on `apt-updates` and, if PostgreSQL is installed locally (from the Debian
+or PGDG packages, or bundled with the GitLab Linux package), `pg-collation`.
 A check you switch off stays off when you install an update.
 
 ```bash
@@ -139,14 +141,23 @@ a reboot or a PostgreSQL restart first.
 
 | State | Section |
 | --- | --- |
-| everything fine | `PostgreSQL collation: OK` (green) |
+| everything fine | `PostgreSQL collation: OK` and the clusters that were checked, e.g. `clusters: port 5432, GitLab` (green) |
 | mismatch | `PostgreSQL collation: VERSION MISMATCH` with the affected databases and the fix (orange) |
 | glibc on disk newer than the running server | the same, with `(glibc on disk: 2.41)` behind the database and the advice to reboot or restart PostgreSQL first (orange) |
-| check failed | `PostgreSQL collation: CHECK FAILED`, the port, then the last successful result (orange); exit status 1 |
+| no running cluster | `PostgreSQL collation: NOTHING CHECKED` (orange), so that an empty check never reads as OK |
+| check failed | `PostgreSQL collation: CHECK FAILED`, the cluster (port or GitLab), then the last successful result (orange); exit status 1 |
 
-Requirements: PostgreSQL 15 or newer from the Debian or PGDG packages; older versions do not
-track the collation version per database and are skipped. Standby clusters are skipped; the
-reindex on the primary is replicated to them. PostgreSQL running in containers is not covered.
+Requirements: PostgreSQL 15 or newer from the Debian or PGDG packages, or bundled with the
+GitLab Linux package; older versions do not track the collation version per database and are
+skipped. Standby clusters are skipped; the reindex on the primary is replicated to them.
+PostgreSQL running in containers is not covered.
+
+GitLab's bundled PostgreSQL runs as the user `gitlab-psql` under `/var/opt/gitlab`, outside
+`pg_lsclusters`; the check reaches it through `gitlab-psql`. It links against the system
+glibc, so a Debian release upgrade affects it like any other cluster. The check includes it
+when runit supervises it (`/opt/gitlab/service/postgresql`) and it is running; at boot it waits
+up to 60 seconds for it to answer, because runit starts it only after
+`gitlab-runsvdir.service`.
 
 ### Fixing a mismatch
 
@@ -169,13 +180,31 @@ script again.
 Right after a glibc upgrade, the running PostgreSQL server still uses the old glibc until
 it is restarted. A reindex then would still sort the old way, so the warning asks for a
 reboot first, or for a PostgreSQL restart (`systemctl restart postgresql`, which restarts all
-clusters) followed by `pg-collation-check`. After a reboot the check runs by itself.
+clusters, or `gitlab-ctl restart postgresql` for GitLab) followed by `pg-collation-check`.
+After a reboot the check runs by itself.
+
+#### GitLab
+
+For GitLab's bundled PostgreSQL the warning gives GitLab's own procedure ("Rebuild all
+indexes" in GitLab's documentation on upgrading the operating system for PostgreSQL): stop
+GitLab except its PostgreSQL, rebuild, start it again.
+
+```bash
+gitlab-ctl stop && gitlab-ctl start postgresql
+/usr/local/sbin/pg-collation-fix --gitlab
+gitlab-ctl start && pg-collation-check
+```
+
+`pg-collation-fix --gitlab` runs as root and works through `gitlab-psql`. It turns off the
+statement timeout of one minute that GitLab sets, and it refuses to rebuild while other GitLab
+services are still running.
 
 ## Requirements
 
 - Debian or a derivative with systemd, dpkg and apt
 - `wget` or `curl` (on a minimal installation: `apt install wget`)
-- for `pg-collation`: PostgreSQL installed locally (see above)
+- for `pg-collation`: PostgreSQL installed locally, from the Debian or PGDG packages or bundled
+  with the GitLab Linux package (see above)
 
 ## Installation
 

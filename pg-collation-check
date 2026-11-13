@@ -13,6 +13,12 @@
 # The second catches a glibc upgrade before PostgreSQL has been restarted: until then the
 # running server still reports the old version.
 #
+# Two kinds of clusters are checked: those of the Debian and PGDG packages (user postgres,
+# ports from pg_lsclusters), and the PostgreSQL bundled with the GitLab Linux package
+# (/opt/gitlab, user gitlab-psql), reached through gitlab-psql. GitLab's links against the
+# system glibc, so a Debian upgrade affects it the same way. The OK section names the clusters
+# that were checked; if none was running, the section says so instead of reporting OK.
+#
 # Runs after every boot, dpkg run and apt update (login-warnings). Run it by hand at any
 # time, as root. If a cluster cannot be queried, the exit status is 1 and the login shows the
 # failure, so a failed check never looks like an all-clear.
@@ -52,9 +58,39 @@ then
     exit 1
 fi
 
+GITLAB_CTL=/opt/gitlab/bin/gitlab-ctl
+GITLAB_PSQL=/opt/gitlab/bin/gitlab-psql
+
+# $1 is the port of a Debian/PGDG cluster, or "gitlab" for GitLab's bundled cluster.
 query()
 {
-    timeout 5 runuser -u postgres -- psql -XAtq "port=$1 dbname=postgres connect_timeout=2" -c "$2" 2>/dev/null
+    if [ "$1" = gitlab ]
+    then
+        # gitlab-psql drops to the user gitlab-psql and knows socket and port; the -d given here
+        # wins over its default database. The connect timeout reaches psql through the environment.
+        PGCONNECT_TIMEOUT=2 timeout 5 "$GITLAB_PSQL" -XAtq -d postgres -c "$2" 2>/dev/null
+    else
+        timeout 5 runuser -u postgres -- psql -XAtq "port=$1 dbname=postgres connect_timeout=2" -c "$2" 2>/dev/null
+    fi
+}
+
+# The name of a cluster in the display.
+label()
+{
+    if [ "$1" = gitlab ]
+    then
+        echo GitLab
+    else
+        echo "port $1"
+    fi
+}
+
+gitlab_running()
+{
+    case $(timeout 20 "$GITLAB_CTL" status postgresql 2>/dev/null) in
+        run:*) return 0 ;;
+    esac
+    return 1
 }
 
 # The glibc version a freshly started process gets, e.g. 2.41. Only digits and dots are
@@ -68,27 +104,53 @@ case $installed in
     *[!0-9.]*) installed="" ;;
 esac
 
-if command -v pg_lsclusters >/dev/null 2>&1
+targets=""
+if id postgres >/dev/null 2>&1 && command -v psql >/dev/null 2>&1
 then
-    # Standbys report "online,recovery" and are skipped; the primary's reindex reaches them.
-    ports=$(pg_lsclusters -h 2>/dev/null | while read -r _ _ port status _
-    do
-        if [ "$status" = "online" ]
-        then
-            echo "$port"
-        fi
-    done)
-else
-    ports=5432
+    if command -v pg_lsclusters >/dev/null 2>&1
+    then
+        # Standbys report "online,recovery" and are skipped; the primary's reindex reaches them.
+        targets=$(pg_lsclusters -h 2>/dev/null | while read -r _ _ port status _
+        do
+            if [ "$status" = "online" ]
+            then
+                echo "$port"
+            fi
+        done)
+    else
+        targets=5432
+    fi
+fi
+
+# GitLab's bundled PostgreSQL is enabled when runit supervises it. A stopped one is skipped
+# like an offline Debian cluster, except at boot: login-warnings.service starts after
+# gitlab-runsvdir.service, but runit starts PostgreSQL only then, so wait up to 60 seconds for
+# it to answer; if it does not, the check fails instead of reporting OK without it.
+if [ -x "$GITLAB_CTL" ] && [ -x "$GITLAB_PSQL" ] && [ -e /opt/gitlab/service/postgresql ]
+then
+    if [ "$trigger" = boot ]
+    then
+        deadline=$(( $(date +%s) + 60 ))
+        until { gitlab_running && query gitlab "SELECT 1" >/dev/null; } || [ "$(date +%s)" -ge "$deadline" ]
+        do
+            sleep 2
+        done
+        targets="$targets gitlab"
+    elif gitlab_running
+    then
+        targets="$targets gitlab"
+    fi
 fi
 
 result=""
 failed=""
-for port in $ports
+checked=""
+for target in $targets
 do
-    if ! version=$(query "$port" "SHOW server_version_num") || [ -z "$version" ]
+    name=$(label "$target")
+    if ! version=$(query "$target" "SHOW server_version_num") || [ -z "$version" ]
     then
-        failed="$failed $port"
+        failed="$failed, $name"
         continue
     fi
     if [ "$version" -lt 150000 ]
@@ -96,8 +158,8 @@ do
         continue
     fi
 
-    if ! rows=$(query "$port" "
-        SELECT 'port $port, ' || datname || ': '
+    if ! rows=$(query "$target" "
+        SELECT '$name, ' || datname || ': '
                || coalesce(datcollversion, 'none') || ' -> '
                || coalesce(pg_database_collation_actual_version(oid), 'none')
                || CASE WHEN datlocprovider = 'c' AND '$installed' <> ''
@@ -110,15 +172,18 @@ do
                OR (datlocprovider = 'c' AND '$installed' <> ''
                    AND datcollversion IS DISTINCT FROM '$installed'))")
     then
-        failed="$failed $port"
+        failed="$failed, $name"
         continue
     fi
+    checked="$checked, $name"
     if [ -n "$rows" ]
     then
         result="$result$rows
 "
     fi
 done
+failed=${failed#, }
+checked=${checked#, }
 
 mkdir -p -m 0755 "$DIR"
 checked_at=$(date '+%Y-%m-%d %H:%M:%S %:z')
@@ -150,9 +215,9 @@ $(sed 's/^/    /' "$LAST")"
     else
         last="  no successful check since boot"
     fi
-    printf '%sPostgreSQL collation: CHECK FAILED\n  could not query the cluster on port(s)%s\n%s\n%s%s\n' \
+    printf '%sPostgreSQL collation: CHECK FAILED\n  could not query: %s\n%s\n%s%s\n' \
         "$orange" "$failed" "$footer" "$last" "$reset" | publish "$FILE"
-    echo "pg-collation-check: could not query the cluster(s) on port(s)$failed." >&2
+    echo "pg-collation-check: could not query: $failed." >&2
     if [ "$quiet" -eq 0 ]
     then
         cat "$FILE"
@@ -160,9 +225,11 @@ $(sed 's/^/    /' "$LAST")"
     exit 1
 fi
 
-if [ -z "$result" ]
+# An OK over no cluster at all would look like an all-clear; it is said instead.
+if [ -z "$checked" ]
 then
-    printf '%sPostgreSQL collation: OK\n%s%s\n' "$green" "$footer" "$reset" | publish "$FILE"
+    printf '%sPostgreSQL collation: NOTHING CHECKED\n  no running PostgreSQL 15 or newer was found\n%s%s\n' \
+        "$orange" "$footer" "$reset" | publish "$FILE"
     publish "$LAST" < "$FILE"
     if [ "$quiet" -eq 0 ]
     then
@@ -171,17 +238,67 @@ then
     exit 0
 fi
 
+if [ -z "$result" ]
+then
+    printf '%sPostgreSQL collation: OK\n  clusters: %s\n%s%s\n' "$green" "$checked" "$footer" "$reset" \
+        | publish "$FILE"
+    publish "$LAST" < "$FILE"
+    if [ "$quiet" -eq 0 ]
+    then
+        cat "$FILE"
+    fi
+    exit 0
+fi
+
+debian_affected=0
+gitlab_affected=0
+if printf '%s' "$result" | grep -q '^port '
+then
+    debian_affected=1
+fi
+if printf '%s' "$result" | grep -q '^GitLab, '
+then
+    gitlab_affected=1
+fi
+
 # With a newer glibc on disk than the running server uses, a reindex would still sort
 # with the old one, and pg-collation-fix compares with the running server.
 if printf '%s' "$result" | grep -q '(glibc on disk: '
 then
-    advice="  PostgreSQL still runs with the old glibc. Reboot first, or restart
-  PostgreSQL (systemctl restart postgresql) and run pg-collation-check;
-  the warning then shows which databases need the fix."
+    advice="  PostgreSQL still runs with the old glibc. Reboot first, or restart it
+  and run pg-collation-check; the warning then shows what needs the fix:"
+    if [ "$debian_affected" -eq 1 ]
+    then
+        advice="$advice
+    systemctl restart postgresql"
+    fi
+    if [ "$gitlab_affected" -eq 1 ]
+    then
+        advice="$advice
+    gitlab-ctl restart postgresql"
+    fi
 else
-    advice="  To fix, rebuild the indexes and reboot afterwards:
+    advice=""
+    if [ "$debian_affected" -eq 1 ]
+    then
+        advice="  To fix, rebuild the indexes and reboot afterwards:
     runuser -u postgres -- /usr/local/sbin/pg-collation-fix
     reboot"
+    fi
+    # GitLab's procedure: stop everything but its PostgreSQL, rebuild, start again
+    # (docs.gitlab.com, administration/postgresql/upgrading_os, "Rebuild all indexes").
+    if [ "$gitlab_affected" -eq 1 ]
+    then
+        if [ -n "$advice" ]
+        then
+            advice="$advice
+"
+        fi
+        advice="$advice  For GitLab, stop it except PostgreSQL, rebuild, start it again:
+    gitlab-ctl stop && gitlab-ctl start postgresql
+    /usr/local/sbin/pg-collation-fix --gitlab
+    gitlab-ctl start && pg-collation-check"
+    fi
 fi
 
 publish "$FILE" <<EOF

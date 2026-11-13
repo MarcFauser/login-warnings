@@ -4,6 +4,29 @@ All notable changes to this project are documented in this file.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project
 uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.4.0] - 2026-11-13
+
+### Added
+
+- `pg-collation` also checks the PostgreSQL bundled with the GitLab Linux package. It runs as
+  `gitlab-psql` under `/var/opt/gitlab`, outside `pg_lsclusters`, so the check could not see
+  it; it reaches it through `gitlab-psql` now. It is included when runit supervises it and it
+  runs; at boot the check waits up to 60 seconds for it to answer, and
+  `login-warnings.service` starts after `gitlab-runsvdir.service`.
+- `pg-collation-fix --gitlab` rebuilds the affected databases of GitLab's PostgreSQL, as root
+  and with the statement timeout turned off. It refuses while other GitLab services run. A
+  mismatch there shows GitLab's procedure: `gitlab-ctl stop && gitlab-ctl start postgresql`,
+  the fix, `gitlab-ctl start && pg-collation-check`.
+- `install.sh` registers `pg-collation` also when only GitLab's PostgreSQL is there.
+
+### Changed
+
+- The OK section of `pg-collation` names the clusters it checked (`clusters: port 5432,
+  GitLab`). With no running cluster it shows `NOTHING CHECKED` in orange instead of `OK`.
+- `CHECK FAILED` names the cluster (`could not query: port 5432, GitLab`) instead of a port list.
+- The Debian/PGDG part of the check runs only where the user `postgres` and `psql` exist;
+  before, a host without them was asked on port 5432 and failed.
+
 ## [3.3.2] - 2026-11-12
 
 ### Changed

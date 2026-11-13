@@ -6,15 +6,55 @@
 # Covers all online primary clusters running PostgreSQL 15 or newer.
 # Standby servers are skipped; the rebuild on the primary is replicated to them.
 #
+# With --gitlab it works on the PostgreSQL bundled with the GitLab Linux package instead,
+# through gitlab-psql, as root. GitLab has to be stopped except its PostgreSQL first
+# (gitlab-ctl stop && gitlab-ctl start postgresql); the script refuses while other GitLab
+# services run.
+#
 # Usage: runuser -u postgres -- /usr/local/sbin/pg-collation-fix
+#        /usr/local/sbin/pg-collation-fix --gitlab
 set -euo pipefail
 cd /
+
+GITLAB_CTL=/opt/gitlab/bin/gitlab-ctl
+GITLAB_PSQL=/opt/gitlab/bin/gitlab-psql
 
 MISMATCH_SQL="
     SELECT datname
     FROM pg_database
     WHERE datallowconn
       AND datcollversion IS DISTINCT FROM pg_database_collation_actual_version(oid)"
+
+usage()
+{
+    echo "Usage: runuser -u postgres -- $0" >&2
+    echo "       $0 --gitlab" >&2
+    exit 2
+}
+
+# psql for one cluster: $1 is a port, or "gitlab" for GitLab's bundled cluster.
+# gitlab-psql drops to the user gitlab-psql; a -d given here wins over its default database.
+run_psql()
+{
+    local target=$1
+    shift
+    if [ "$target" = gitlab ]
+    then
+        "$GITLAB_PSQL" "$@"
+    else
+        psql -p "$target" "$@"
+    fi
+}
+
+label()
+{
+    if [ "$1" = gitlab ]
+    then
+        echo "GitLab"
+    else
+        echo "Port $1"
+    fi
+}
 
 list_ports()
 {
@@ -32,24 +72,72 @@ list_ports()
     fi
 }
 
-if [ "$(id -un)" != "postgres" ]
+gitlab=0
+case $# in
+    0) ;;
+    1) [ "$1" = --gitlab ] || usage; gitlab=1 ;;
+    *) usage ;;
+esac
+
+if [ "$gitlab" -eq 1 ]
 then
-    echo "Please run as postgres: runuser -u postgres -- $0" >&2
-    exit 1
+    if [ "$(id -u)" -ne 0 ]
+    then
+        echo "Please run as root: $0 --gitlab" >&2
+        exit 1
+    fi
+    if [ ! -x "$GITLAB_PSQL" ]
+    then
+        echo "$GITLAB_PSQL not found; this is not a GitLab Linux package installation." >&2
+        exit 1
+    fi
+    targets=gitlab
+else
+    if [ "$(id -un)" != "postgres" ]
+    then
+        echo "Please run as postgres: runuser -u postgres -- $0" >&2
+        exit 1
+    fi
+    targets=$(list_ports)
 fi
+
+# GitLab sets a statement timeout of one minute; a reindex needs none.
+REBUILD_SQL='SET statement_timeout = 0;
+REINDEX DATABASE :"db";
+ALTER DATABASE :"db" REFRESH COLLATION VERSION;'
 
 found=0
 failed=""
-for port in $(list_ports)
+for target in $targets
 do
-    version=$(psql -XAtq -p "$port" -d postgres -c "SHOW server_version_num")
+    name=$(label "$target")
+    version=$(run_psql "$target" -XAtq -d postgres -c "SHOW server_version_num")
     if [ "$version" -lt 150000 ]
     then
-        echo "Port $port: PostgreSQL older than 15, database collation versions are not tracked, skipping."
+        echo "$name: PostgreSQL older than 15, database collation versions are not tracked, skipping."
         continue
     fi
 
-    dbs=$(psql -XAtq -p "$port" -d postgres -c "$MISMATCH_SQL")
+    dbs=$(run_psql "$target" -XAtq -d postgres -c "$MISMATCH_SQL")
+    if [ -z "$dbs" ]
+    then
+        continue
+    fi
+
+    # A reindex while GitLab runs would hold its tables for the whole rebuild.
+    if [ "$target" = gitlab ]
+    then
+        # gitlab-ctl status exits non-zero when a service is down, which is the goal here.
+        status=$("$GITLAB_CTL" status 2>/dev/null || true)
+        others=$(printf '%s\n' "$status" | awk -F'[: ]+' '$1 == "run" && $2 != "postgresql" { print $2 }' | tr '\n' ' ')
+        if [ -n "$others" ]
+        then
+            echo "GitLab is still running ($others). Stop it except PostgreSQL first:" >&2
+            echo "  gitlab-ctl stop && gitlab-ctl start postgresql" >&2
+            exit 1
+        fi
+    fi
+
     # Read line by line so that database names containing spaces stay intact.
     while IFS= read -r db
     do
@@ -59,17 +147,14 @@ do
         fi
 
         found=1
-        echo "Port $port: rebuilding indexes in database \"$db\"..."
+        echo "$name: rebuilding indexes in database \"$db\"..."
         # The collation version is only refreshed if the reindex succeeded.
-        if psql -X -v ON_ERROR_STOP=1 -v db="$db" -p "$port" -d "$db" <<'EOF'
-REINDEX DATABASE :"db";
-ALTER DATABASE :"db" REFRESH COLLATION VERSION;
-EOF
+        if run_psql "$target" -X -v ON_ERROR_STOP=1 -v db="$db" -d "$db" <<< "$REBUILD_SQL"
         then
-            echo "Port $port: database \"$db\" done."
+            echo "$name: database \"$db\" done."
         else
-            echo "Port $port: database \"$db\" FAILED, collation version left unchanged." >&2
-            failed="$failed  port $port, $db
+            echo "$name: database \"$db\" FAILED, collation version left unchanged." >&2
+            failed="$failed  $name, $db
 "
         fi
     done <<< "$dbs"
@@ -92,5 +177,11 @@ then
 fi
 
 echo
-echo "All affected databases are fixed. Reboot now; the check at boot removes the login"
-echo "warning (or run pg-collation-check as root)."
+if [ "$gitlab" -eq 1 ]
+then
+    echo "All affected databases are fixed. Start GitLab again and update the login warning:"
+    echo "  gitlab-ctl start && pg-collation-check"
+else
+    echo "All affected databases are fixed. Reboot now; the check at boot removes the login"
+    echo "warning (or run pg-collation-check as root)."
+fi

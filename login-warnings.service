@@ -2,8 +2,9 @@
 Description=Login warnings: run every enabled check after boot
 Documentation=https://github.com/MarcFauser/login-warnings
 # pg-collation queries the PostgreSQL clusters; postgresql.service waits for all of them (each
-# postgresql@.service is Before= it). Without PostgreSQL this ordering has no effect.
-After=postgresql.service
+# postgresql@.service is Before= it). gitlab-runsvdir.service starts GitLab's bundled
+# PostgreSQL; the check waits for it to answer. Without these units the ordering has no effect.
+After=postgresql.service gitlab-runsvdir.service
 
 [Service]
 Type=oneshot

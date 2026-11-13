@@ -13,7 +13,8 @@
 #   /etc/login-warnings.d/<check>                one file per enabled check (<check>.off: switched off)
 #   /var/lib/login-warnings                      when the last apt update started and reached a repository
 #
-# Registers apt-updates, and pg-collation if PostgreSQL is installed locally. A check that was
+# Registers apt-updates, and pg-collation if PostgreSQL is installed locally (Debian/PGDG
+# packages, or the PostgreSQL bundled with the GitLab Linux package). A check that was
 # switched off (login-warnings disable) stays off. Run as root from the unpacked release
 # archive (/usr/local/src/login-warnings) or a checkout of this repository. Safe to run again;
 # existing files are overwritten, which is also how updates are applied (login-warnings update
@@ -101,12 +102,22 @@ register()
 echo "Registering checks:"
 register apt-updates
 postgresql=0
+gitlab=0
 if id postgres >/dev/null 2>&1 && command -v psql >/dev/null 2>&1
 then
     postgresql=1
+fi
+# GitLab Linux package with its bundled PostgreSQL enabled (runit supervises it).
+if [ -x /opt/gitlab/bin/gitlab-psql ] && [ -e /opt/gitlab/service/postgresql ]
+then
+    gitlab=1
+fi
+if [ "$postgresql" -eq 1 ] || [ "$gitlab" -eq 1 ]
+then
     register pg-collation
 else
-    echo "  pg-collation: not registered, no local PostgreSQL (user postgres or psql missing)"
+    echo "  pg-collation: not registered, no local PostgreSQL (no user postgres with psql,"
+    echo "    no PostgreSQL of the GitLab Linux package)"
 fi
 
 systemctl daemon-reload
@@ -134,6 +145,12 @@ if [ "$postgresql" -eq 1 ] && command -v pg_lsclusters >/dev/null 2>&1
 then
     echo "Clusters (only PostgreSQL 15+ can be checked):"
     pg_lsclusters
+    echo
+fi
+if [ "$gitlab" -eq 1 ]
+then
+    echo "GitLab's bundled PostgreSQL:"
+    /opt/gitlab/bin/gitlab-ctl status postgresql || true
     echo
 fi
 

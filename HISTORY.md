@@ -240,3 +240,33 @@ visibly instead of reading as "up to date".
 3.3.1 packs the archive with `tar.umask` 0022: unpacked on the server, git's default 0002 had
 left the source folder group-writable. 3.3.2 shows every version a person reads as `vx.y.z`, at
 the user's request; where a program reads the version, the bare number stays.
+
+## 2026-11-13 - 3.4.0: GitLab's bundled PostgreSQL
+
+During the rollout, `install.sh` on the GitLab server registered only `apt-updates`: GitLab's
+own PostgreSQL 17 runs as `gitlab-psql` under `/var/opt/gitlab`, there is no user `postgres`,
+no `psql` in the path and no `pg_lsclusters`. Read by hand through `gitlab-psql`, every
+database stored 2.41, matching the glibc on disk, and `ldd` showed the server binary linked
+against the system `libc.so.6`. So a Debian release upgrade hits it like any other cluster
+(the server went from Debian 12 to 13 on 2026-02-14), and the user asked for the check to
+cover it.
+
+- `gitlab-psql` is GitLab's documented database console. It reads user, socket and port from
+  `/opt/gitlab/etc/gitlab-psql-rc` and drops privileges itself; a `-d` given after it wins
+  over its default database (measured: `current_database()` was `postgres`). Building the
+  connection from the rc file would duplicate what the wrapper already knows.
+- A stopped GitLab PostgreSQL is skipped like an offline Debian cluster. At boot that would
+  be wrong: runit starts PostgreSQL only after `gitlab-runsvdir.service`, so the check would
+  skip it and report OK without it. At boot it therefore waits up to 60 seconds and fails if
+  it gets no answer.
+- An OK over no cluster at all is the empty-set all-clear this project exists to avoid, so the
+  OK section now lists the clusters it checked and an empty run says `NOTHING CHECKED`.
+- The fix follows GitLab's documentation ("Rebuild all indexes"): downtime, `SET
+  statement_timeout = 0` (GitLab sets one minute; measured), `REINDEX DATABASE`, `REFRESH
+  COLLATION VERSION`. `pg-collation-fix --gitlab` refuses while other GitLab services run,
+  because a reindex would hold their tables for the whole rebuild.
+
+Tested on the GitLab server from a private folder, with the result written there: OK with
+`clusters: GitLab`, the boot run in one second, and the mismatch, glibc-on-disk, failure and
+nothing-found sections produced synthetically; the fix found nothing to do and its guard
+refused with the rebuild statements replaced by `SELECT`.
