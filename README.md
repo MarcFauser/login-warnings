@@ -43,7 +43,7 @@ Two checks so far:
 | `/usr/local/sbin/apt-updates-check` | The `apt-updates` check; writes `/run/login-warnings/apt-updates`. |
 | `/usr/local/sbin/pg-collation-check` | The `pg-collation` check; writes `/run/login-warnings/pg-collation`. |
 | `/usr/local/sbin/pg-collation-fix` | Runs `REINDEX DATABASE` on every affected database, then `ALTER DATABASE ... REFRESH COLLATION VERSION`. The version is only refreshed if the reindex succeeded. With `--gitlab` it works on GitLab's bundled PostgreSQL. |
-| `/var/lib/login-warnings` | When the last apt update started and when it last reached a repository; the latest release and when it was checked. |
+| `/var/lib/login-warnings` | When the last apt update started and when it last reached a repository, and a marker while an apt update has not reached one; the latest release and when it was checked. |
 
 Nothing is ever silent: an empty login would look exactly like an all-clear. Every section
 names date, time and trigger of its check (at boot, after a package change, after apt update,
@@ -115,6 +115,11 @@ The apt hooks record when an apt update starts and when it reaches a repository.
 success hook as soon as at least one repository was fetched, also when another one fails
 (measured with apt 3.0.4). So the check reports an apt update that reached no repository at
 all, but not a single failing repository among working ones; `apt update` itself shows that.
+
+The start hook also leaves a marker that the success hook removes, and the check reports an
+apt update as unfinished while the marker is there. It does not compare the two times: when the
+clock is set back during an apt update, for example by NTP at boot, the success time can lie
+before the start time.
 
 ## pg-collation: PostgreSQL collation versions
 

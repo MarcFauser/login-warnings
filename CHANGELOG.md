@@ -4,6 +4,18 @@ All notable changes to this project are documented in this file.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project
 uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.4.1] - 2026-11-13
+
+### Fixed
+
+- `apt-updates` no longer reports a finished apt update as "reached no repository or did not
+  finish" when the clock was set back while it ran. It compared the times of the start and
+  success stamps; after a reboot, an apt update started by another service at boot finished
+  while NTP set the clock back by 0.6 seconds, so the success time lay one second before the
+  start time. The start hook now leaves a marker in `/var/lib/login-warnings` that the success
+  hook removes, and the check goes by the marker. `install.sh` carries over an unfinished apt
+  update recorded by an older version.
+
 ## [3.4.0] - 2026-11-13
 
 ### Added

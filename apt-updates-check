@@ -14,8 +14,9 @@
 # APT::Periodic::Update-Package-Lists in /etc/apt/apt.conf.d/80login-warnings, or by hand.
 # The apt hooks in the same file call this script with --stamp start before and with
 # --stamp success after every apt update; apt runs the second one as soon as at least one
-# repository was fetched. The stamps in /var/lib/login-warnings give the age of the lists and
-# show when the last apt update reached no repository or did not finish. A single failing
+# repository was fetched. The stamps in /var/lib/login-warnings give the age of the lists.
+# --stamp start also leaves a marker that --stamp success removes; a marker that is still
+# there means the last apt update reached no repository or did not finish. A single failing
 # repository among working ones does not show up here; apt update itself reports it.
 #
 # Runs after every boot, dpkg run and apt update (login-warnings). Run it by hand at any
@@ -74,7 +75,17 @@ then
         *) usage ;;
     esac
     mkdir -p -m 0755 "$STATE"
-    date '+%s' | publish "$STATE/apt-update-$stamp"
+    # The order of the hooks tells an unfinished apt update, not the times in the stamps: an
+    # NTP step during an apt update at boot put the success stamp one second before the start
+    # stamp (measured 2026-11-13). The marker holds the start time for the message.
+    if [ "$stamp" = start ]
+    then
+        date '+%s' | publish "$STATE/apt-update-pending"
+        date '+%s' | publish "$STATE/apt-update-start"
+    else
+        date '+%s' | publish "$STATE/apt-update-success"
+        rm -f "$STATE/apt-update-pending"
+    fi
     exit 0
 fi
 
@@ -167,7 +178,6 @@ count_security=$(printf '%s' "$security" | grep -c .)
 count_other=$(printf '%s' "$other" | grep -c .)
 count=$((count_security + count_other))
 
-start=$(read_stamp start)
 success=$(read_stamp success)
 if [ -n "$success" ]
 then
@@ -190,15 +200,21 @@ else
     lists="  lists of unknown age"
 fi
 
-# An apt update that started after the last fetched repository has failed or is still running.
+# An apt update whose marker is still there has reached no repository or is still running.
 # Lists older than two days mean that the daily refresh has not run at least once:
 # apt.systemd.daily updates once per calendar day, and apt-daily.timer (6:00 and 18:00, up to
 # 12 h random delay) runs at least once between 6:00 and 18:00 every day, so a working
 # refresh leaves at most about 42 hours between two updates.
 problem=""
-if [ -n "$start" ] && { [ -z "$success" ] || [ "$success" -lt "$start" ]; }
+if [ -e "$STATE/apt-update-pending" ]
 then
-    problem="the apt update started $(format_time "$start") reached no repository or did not finish; run apt update to see why"
+    pending=$(read_stamp pending)
+    if [ -n "$pending" ]
+    then
+        problem="the apt update started $(format_time "$pending") reached no repository or did not finish; run apt update to see why"
+    else
+        problem="the last apt update reached no repository or did not finish; run apt update to see why"
+    fi
 elif [ -z "$success" ]
 then
     problem="no apt update recorded yet; run: apt update"

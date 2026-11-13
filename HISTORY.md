@@ -270,3 +270,26 @@ Tested on the GitLab server from a private folder, with the result written there
 `clusters: GitLab`, the boot run in one second, and the mismatch, glibc-on-disk, failure and
 nothing-found sections produced synthetically; the fix found nothing to do and its guard
 refused with the rebuild statements replaced by `SELECT`.
+
+## 2026-11-13 - 3.4.1: the order of the hooks, not the clock
+
+After package updates during the rollout a server was rebooted, and the first login showed
+"the apt update started 17:00:21 reached no repository or did not finish", although that apt
+update had worked. The boot journal explained it: `patchmon-agent.service` runs an apt update when it
+starts, and while it ran, ntpdate set the clock back by 0.6 seconds. The start stamp was
+written before the step (17:00:21), the success stamp after it (17:00:20), and the check took
+"success before start" for an apt update that never got through. One apt update, not two: the
+checks that its `Post-Invoke` hook ran show up once in the agent's journal.
+
+Comparing two wall-clock times cannot tell the order of two events when the clock may jump
+between them, and at boot it does. The hooks themselves run in a fixed order, so the start
+hook now leaves a marker and the success hook removes it; the check reports an unfinished
+apt update while the marker is there. A server updated from an older version may have a failed
+apt update recorded the old way, so `install.sh` carries it over once, read with the old rule,
+and only while the installed `apt-updates-check` does not know the marker yet; after that the
+old rule is never applied again.
+
+Tested on that server from a private folder: the stamps of that boot gave the false alarm with
+3.4.0 and none with 3.4.1; a start without success, start then success, a clock set back
+between the two, and an empty marker; and the carry-over block, cut from the shipped
+`install.sh`, in five cases with the old and the new script as the installed one.

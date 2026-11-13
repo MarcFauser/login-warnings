@@ -11,7 +11,7 @@
 #   /etc/apt/apt.conf.d/80login-warnings         refreshes the package lists daily, runs the checks after every apt update
 #   /etc/profile.d/login-warnings.sh             shows the results in every interactive login shell
 #   /etc/login-warnings.d/<check>                one file per enabled check (<check>.off: switched off)
-#   /var/lib/login-warnings                      when the last apt update started and reached a repository
+#   /var/lib/login-warnings                      when the last apt update started and reached a repository, whether one is unfinished
 #
 # Registers apt-updates, and pg-collation if PostgreSQL is installed locally (Debian/PGDG
 # packages, or the PostgreSQL bundled with the GitLab Linux package). A check that was
@@ -52,6 +52,29 @@ if ! command -v apt-get >/dev/null 2>&1
 then
     echo "apt-get not found; this needs Debian or a derivative." >&2
     exit 1
+fi
+
+# Up to 3.4.0 an unfinished apt update was told by comparing the start and success stamps;
+# since 3.4.1 apt-updates-check leaves a marker at the start and removes it on success. An
+# unfinished apt update recorded by an older version (its apt-updates-check does not know the
+# marker) is carried over, read the way that version read it. Runs before the new
+# apt-updates-check replaces the old one.
+state=/var/lib/login-warnings
+if [ -f "$state/apt-update-start" ] && [ ! -e "$state/apt-update-pending" ] &&
+    [ -f /usr/local/sbin/apt-updates-check ] &&
+    ! grep -q 'apt-update-pending' /usr/local/sbin/apt-updates-check
+then
+    start=$(cat "$state/apt-update-start")
+    success=$(cat "$state/apt-update-success" 2>/dev/null || true)
+    case $start in '' | *[!0-9]*) start="" ;; esac
+    case $success in '' | *[!0-9]*) success="" ;; esac
+    if [ -n "$start" ] && { [ -z "$success" ] || [ "$success" -lt "$start" ]; }
+    then
+        printf '%s\n' "$start" > "$state/apt-update-pending.tmp"
+        chmod 0644 "$state/apt-update-pending.tmp"
+        mv -f "$state/apt-update-pending.tmp" "$state/apt-update-pending"
+        echo "Carried over: the apt update started $(date -d "@$start" '+%Y-%m-%d %H:%M:%S %:z') reached no repository or did not finish."
+    fi
 fi
 
 install -m 0755 -o root -g root "$src/login-warnings" /usr/local/sbin/login-warnings
