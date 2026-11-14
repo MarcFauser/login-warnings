@@ -4,6 +4,17 @@ All notable changes to this project are documented in this file.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project
 uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [4.0.1] - 2026-11-14
+
+### Fixed
+
+- `ssh-password` reported `CHECK FAILED` although sshd had answered: the `ssh` client ends its
+  messages on stderr with CR LF, and the line `Permission denied (publickey).` did not match
+  with the CR at its end. The CR is removed before the line is read. Found on the first run on
+  a real server; 4.0.0 was never released.
+- When sshd gives no list of methods, the section says so ("no list of authentication methods
+  from sshd at …") instead of "did not answer", which was wrong when it had answered.
+
 ## [4.0.0] - 2026-11-14
 
 ### Added

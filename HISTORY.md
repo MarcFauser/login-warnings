@@ -329,3 +329,13 @@ a server: all states, a listener on IPv6 only, keyboard-interactive set through 
 `ChallengeResponseAuthentication`, a setting from a matching Match block and from a file
 sorting after the suggested drop-in, and the width of every line, also inside the last result
 that a failed check repeats with four more columns of indentation.
+
+4.0.1, the same evening: the first run on a real server (a Debian 13 container, from a folder
+in `/tmp`, removed afterwards) said `CHECK FAILED` with sshd's own answer `Permission denied
+(publickey).` printed below it. `od -c` showed why: the `ssh` client ends its stderr messages
+with `\r\n`, and the pattern expected the full stop at the end of the line. The fake `ssh` of
+the tests printed a line I had typed, without the CR, so every test passed. The fake now adds
+the CR, and run against 4.0.0 it turns every state in which sshd answers into `CHECK FAILED`;
+the check removes the CR first. The fallback message said "did not answer" although sshd had
+answered; it now says that no list of methods came back. After the fix the server showed `OFF`
+and `sshd offers: publickey`, one journal line per run, and `/run/login-warnings` untouched.
