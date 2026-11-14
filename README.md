@@ -5,7 +5,7 @@ window. Each check writes one section of the display into `/run/login-warnings`,
 the time it ran: green when all is well, orange when something needs attention.
 
 ```
------ login-warnings v3.3.0 --------------------------------------------
+----- login-warnings v4.0.0 --------------------------------------------
 Package updates: 3 (0 security)
   libpq5 postgresql-18 postgresql-client-common
   show: apt list --upgradable
@@ -18,17 +18,23 @@ PostgreSQL collation: OK
   checked 2026-11-12 22:43:09 +01:00 (at boot)
   check again: pg-collation-check
 
+SSH password login: OFF
+  sshd offers: publickey
+  checked 2026-11-12 22:43:09 +01:00 (at boot)
+  check again: ssh-password-check
+
 ----- latest release checked 2026-11-12 23:06:35 +01:00 ----------------
 ```
 
 Every line stays below 80 columns, so nothing wraps in a normal terminal window.
 
-Two checks so far:
+Three checks so far:
 
 | Check | Reports |
 | --- | --- |
 | `apt-updates` | Package updates offered by the package lists, by name, security updates separately, and how old the lists are. |
 | `pg-collation` | PostgreSQL databases whose collation version no longer matches glibc, with a fix script. Covers the Debian/PGDG clusters and the PostgreSQL bundled with the GitLab Linux package. |
+| `ssh-password` | Whether the SSH server accepts password logins, where the setting comes from, and how to allow keys only. |
 
 ## How it works
 
@@ -36,11 +42,12 @@ Two checks so far:
 | --- | --- |
 | `/usr/local/sbin/login-warnings` | Runs every enabled check, shows the results, switches checks on and off, installs updates. |
 | `/etc/login-warnings.d/<check>` | One file per enabled check; its first line is the command that runs it. `<check>.off` is a check that is switched off. |
-| `/etc/systemd/system/login-warnings.service` | Runs every enabled check once after every boot, after PostgreSQL has started (and after `gitlab-runsvdir.service`, which starts GitLab's PostgreSQL). |
+| `/etc/systemd/system/login-warnings.service` | Runs every enabled check once after every boot, after PostgreSQL has started (and after `gitlab-runsvdir.service`, which starts GitLab's PostgreSQL) and after sshd listens (`ssh.service` or `ssh.socket`). |
 | `/etc/dpkg/dpkg.cfg.d/login-warnings` | Runs every enabled check after every dpkg run (`post-invoke`). |
 | `/etc/apt/apt.conf.d/80login-warnings` | Refreshes the package lists once a day and runs every enabled check after every apt update. |
 | `/etc/profile.d/login-warnings.sh` | Runs `login-warnings show` in interactive login shells: in every terminal window, for every user, and never in scripts or file transfers. `show` puts the sections of all enabled checks into one frame. |
 | `/usr/local/sbin/apt-updates-check` | The `apt-updates` check; writes `/run/login-warnings/apt-updates`. |
+| `/usr/local/sbin/ssh-password-check` | The `ssh-password` check; writes `/run/login-warnings/ssh-password`. |
 | `/usr/local/sbin/pg-collation-check` | The `pg-collation` check; writes `/run/login-warnings/pg-collation`. |
 | `/usr/local/sbin/pg-collation-fix` | Runs `REINDEX DATABASE` on every affected database, then `ALTER DATABASE ... REFRESH COLLATION VERSION`. The version is only refreshed if the reindex succeeded. With `--gitlab` it works on GitLab's bundled PostgreSQL. |
 | `/var/lib/login-warnings` | When the last apt update started and when it last reached a repository, and a marker while an apt update has not reached one; the latest release and when it was checked. |
@@ -58,8 +65,9 @@ windows on the same connection.
 
 ## Choosing the checks
 
-`install.sh` switches on `apt-updates` and, if PostgreSQL is installed locally (from the Debian
-or PGDG packages, or bundled with the GitLab Linux package), `pg-collation`.
+`install.sh` switches on `apt-updates`, `ssh-password` if an SSH server (`sshd`) is installed,
+and `pg-collation` if PostgreSQL is installed locally (from the Debian or PGDG packages, or
+bundled with the GitLab Linux package).
 A check you switch off stays off when you install an update.
 
 ```bash
@@ -78,6 +86,7 @@ Run every enabled check by hand and see the results, or a single check:
 login-warnings
 apt-updates-check
 pg-collation-check
+ssh-password-check
 ```
 
 ## apt-updates: package updates
@@ -204,12 +213,81 @@ gitlab-ctl start && pg-collation-check
 statement timeout of one minute that GitLab sets, and it refuses to rebuild while other GitLab
 services are still running.
 
+## ssh-password: SSH password login
+
+A server that accepts passwords over SSH can be attacked by guessing them, and on a public
+address such attempts never stop. Debian's sshd accepts passwords unless told otherwise:
+`/etc/ssh/sshd_config` leaves `PasswordAuthentication` commented out, so sshd's default `yes`
+applies.
+
+sshd reads its configuration when it starts, so the check asks two sources:
+
+- **The running sshd.** The check connects to it on the local address it listens on
+  (`127.0.0.1` or `::1` for a wildcard listener) and asks which authentication methods it
+  offers, with the `none` request every SSH client sends first. Nothing logs in, no key or
+  agent is used, and nothing is written to root's SSH files. sshd logs `Connection closed by
+  authenticating user root 127.0.0.1 port ... [preauth]`.
+- **The configuration on disk.** `sshd -T -C` gives the settings for the same connection (root
+  from that address), and sshd's debug output (`sshd -T -ddd`) names the file and line each
+  setting comes from.
+
+Password login counts as on when sshd offers `password` or `keyboard-interactive`; with PAM,
+keyboard-interactive asks for the account's password as well.
+
+| State | Section |
+| --- | --- |
+| no password login | `SSH password login: OFF` and the methods sshd offers (green) |
+| password login | `SSH password login: ON`, the methods, whether root may use a password (`PermitRootLogin`), where `PasswordAuthentication yes` or `KbdInteractiveAuthentication yes` comes from (a file and line, sshd's default, or a Match block), and how to allow keys only (orange) |
+| password login, but the configuration on disk allows keys only | `ON` and the command that restarts sshd (orange) |
+| keys only, but the configuration on disk allows passwords | `ON AFTER RESTART`: sshd uses it when it restarts, at the latest at the next boot (orange) |
+| an account with an empty password got in | `ON` with that line (orange) |
+| `sshd -T` fails or sshd does not answer | `SSH password login: CHECK FAILED` with the reason, then the last successful result (orange); exit status 1 |
+| no SSH server installed | `SSH password login: NOTHING CHECKED` (orange) |
+
+`Match` blocks change settings per user, group, address or host, and the check evaluates them
+only for root from the local address. A block like `Match Address 10.0.0.0/8` with
+`PasswordAuthentication yes` allows passwords from that network while the check sees keys only,
+so every section lists the Match blocks sshd reads, also those in included files.
+
+### Allowing keys only
+
+First make sure that a key login works, in a second window that stays open. Then:
+
+```bash
+printf '%s\n' 'PasswordAuthentication no' 'KbdInteractiveAuthentication no' > /etc/ssh/sshd_config.d/10-key-only.conf
+```
+
+```bash
+sshd -t && systemctl restart ssh && ssh-password-check
+```
+
+Debian's `sshd_config` includes `/etc/ssh/sshd_config.d/*.conf` near its top (line 12 in
+Debian 13), and sshd keeps the first value it reads. So this file wins over a
+`PasswordAuthentication yes` further down in `sshd_config` and over a file that sorts after it,
+such as `50-cloud-init.conf`. A value set before the `Include` line still wins; the warning
+names the file and line it comes from.
+
+Use `restart`, not `reload`: where sshd is socket-activated (`systemctl is-active ssh.socket`
+says `active`), `systemctl reload ssh` ends sshd with "Cannot bind any address", and only the
+next connection starts it again, through the socket (measured 2026-11-14, Debian 13, OpenSSH
+10.0).
+
+A server that should accept passwords: `login-warnings disable ssh-password`.
+
+The check runs at boot, after dpkg and apt update and by hand; after a change to sshd's
+configuration, run `ssh-password-check` (the command above ends with it). OpenSSH 9.8 and newer
+refuse addresses for a while that keep failing to log in (`PerSourcePenalties`, from 15 seconds
+of penalty on by default); five checks within 0.3 seconds were not refused (OpenSSH 10.0,
+measured 2026-11-14).
+
 ## Requirements
 
 - Debian or a derivative with systemd, dpkg and apt
 - `wget` or `curl` (on a minimal installation: `apt install wget`)
 - for `pg-collation`: PostgreSQL installed locally, from the Debian or PGDG packages or bundled
   with the GitLab Linux package (see above)
+- for `ssh-password`: the OpenSSH server (`openssh-server`, which brings the `ssh` client the
+  check uses)
 
 ## Installation
 
@@ -277,6 +355,7 @@ systemctl disable --now login-warnings.service
 rm -f /etc/systemd/system/login-warnings.service /etc/dpkg/dpkg.cfg.d/login-warnings \
       /etc/apt/apt.conf.d/80login-warnings /etc/profile.d/login-warnings.sh \
       /usr/local/sbin/login-warnings /usr/local/sbin/apt-updates-check \
+      /usr/local/sbin/ssh-password-check \
       /usr/local/sbin/pg-collation-check /usr/local/sbin/pg-collation-fix
 rm -rf /etc/login-warnings.d /run/login-warnings /var/lib/login-warnings /usr/local/src/login-warnings
 systemctl daemon-reload

@@ -293,3 +293,39 @@ Tested on that server from a private folder: the stamps of that boot gave the fa
 3.4.0 and none with 3.4.1; a start without success, start then success, a clock set back
 between the two, and an empty marker; and the carry-over block, cut from the shipped
 `install.sh`, in five cases with the old and the new script as the installed one.
+
+## 2026-11-14 - 4.0.0: a warning when SSH accepts passwords
+
+During the rollout three servers had password login switched off by hand, and the user asked
+for a warning wherever it is still possible. Asked from outside the same evening, 13 of the 17
+servers that answered offered `password` (one name did not resolve). Version 4.0.0 because a
+new check is a new function, as the user counts versions.
+
+- **The running sshd is asked, not only its configuration.** sshd reads the configuration when
+  it starts, so a file changed without a restart would read as "off" while passwords still
+  work. The check connects to its own sshd and sends the `none` request every client starts
+  with; the answer lists the methods (`Permission denied (publickey).`, measured on a server
+  over `127.0.0.1` and `::1`). It logs one `Connection closed by authenticating user root ...
+  [preauth]` line and logs nobody in. OpenSSH 10.0 penalises addresses that fail to log in
+  (`PerSourcePenalties`, enforced from 15 seconds of penalty); five probes within 0.3 seconds
+  were all answered.
+- **The configuration on disk is compared with it,** evaluated for the same connection
+  (`sshd -T -C user=root,addr=…`), so a pending restart shows in both directions: "sshd still
+  runs with the old one" and `ON AFTER RESTART`.
+- **Match blocks are listed, not evaluated.** Measured with a throwaway configuration fed to
+  `sshd -T -f /dev/stdin` (a process-substitution path does not work, sshd closes the
+  descriptor): without `-C`, sshd ignores Match blocks, and a `Match Address 10.0.0.0/8` with
+  `PasswordAuthentication yes` only showed up with `-C addr=10.1.2.3`. All addresses and users
+  cannot be tried, so the section lists the blocks. sshd itself names them, from every included
+  file, in its debug output (`checking syntax for 'Match …'`), and names the file and line of
+  every setting it reads outside Match blocks (`<file>:<line> setting …`); the first one wins.
+  That is where "set in" and "sshd's default" come from.
+- **The fix in the warning sets only the two authentication settings.** The user's own drop-in
+  on three servers also sets `PermitRootLogin prohibit-password`; written by the check's advice
+  on a server with `PermitRootLogin no`, that line would win (first value) and allow root again.
+
+Tested in a WSL distribution with a fake `sshd` and `ssh` fed with `sshd -T` output captured on
+a server: all states, a listener on IPv6 only, keyboard-interactive set through its old name
+`ChallengeResponseAuthentication`, a setting from a matching Match block and from a file
+sorting after the suggested drop-in, and the width of every line, also inside the last result
+that a failed check repeats with four more columns of indentation.

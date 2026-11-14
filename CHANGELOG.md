@@ -4,6 +4,27 @@ All notable changes to this project are documented in this file.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project
 uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [4.0.0] - 2026-11-14
+
+### Added
+
+- A third check, `ssh-password`: it warns when the SSH server lets anyone log in with a
+  password. It asks the running sshd on its local address which authentication methods it
+  offers (the "none" request every client sends first; nothing logs in) and compares that with
+  the configuration on disk (`sshd -T` for the same connection). Password login counts as on
+  when sshd offers `password` or `keyboard-interactive`. States: `OFF` (green); `ON` with the
+  file and line the setting comes from, or "sshd's default", and how to allow keys only;
+  `ON` with "the configuration on disk allows keys only, but sshd still runs with the old
+  one"; `ON AFTER RESTART` when only the configuration on disk allows passwords; `CHECK
+  FAILED` with the last successful result; `NOTHING CHECKED` without an SSH server. Match
+  blocks are evaluated only for root from the local address, so the section lists them.
+- `install.sh` registers `ssh-password` when `sshd` is installed.
+
+### Changed
+
+- `login-warnings.service` starts after `ssh.service` and `ssh.socket`, so the check finds
+  sshd listening at boot.
+
 ## [3.4.1] - 2026-11-13
 
 ### Fixed

@@ -4,6 +4,7 @@
 # Installs login-warnings on Debian-based systems:
 #   /usr/local/sbin/login-warnings               runs the checks, shows the results, switches checks on and off
 #   /usr/local/sbin/apt-updates-check            writes /run/login-warnings/apt-updates
+#   /usr/local/sbin/ssh-password-check           writes /run/login-warnings/ssh-password
 #   /usr/local/sbin/pg-collation-check           writes /run/login-warnings/pg-collation
 #   /usr/local/sbin/pg-collation-fix             rebuilds indexes, refreshes the collation version
 #   /etc/systemd/system/login-warnings.service   runs the checks after every boot
@@ -13,8 +14,9 @@
 #   /etc/login-warnings.d/<check>                one file per enabled check (<check>.off: switched off)
 #   /var/lib/login-warnings                      when the last apt update started and reached a repository, whether one is unfinished
 #
-# Registers apt-updates, and pg-collation if PostgreSQL is installed locally (Debian/PGDG
-# packages, or the PostgreSQL bundled with the GitLab Linux package). A check that was
+# Registers apt-updates, ssh-password if an SSH server (sshd) is installed, and pg-collation
+# if PostgreSQL is installed locally (Debian/PGDG packages, or the PostgreSQL bundled with the
+# GitLab Linux package). A check that was
 # switched off (login-warnings disable) stays off. Run as root from the unpacked release
 # archive (/usr/local/src/login-warnings) or a checkout of this repository. Safe to run again;
 # existing files are overwritten, which is also how updates are applied (login-warnings update
@@ -29,7 +31,7 @@ then
     exit 1
 fi
 
-for file in login-warnings apt-updates-check pg-collation-check pg-collation-fix \
+for file in login-warnings apt-updates-check ssh-password-check pg-collation-check pg-collation-fix \
     login-warnings.service dpkg-login-warnings.cfg apt-login-warnings.conf login-warnings.sh
 do
     if [ ! -f "$src/$file" ]
@@ -79,6 +81,7 @@ fi
 
 install -m 0755 -o root -g root "$src/login-warnings" /usr/local/sbin/login-warnings
 install -m 0755 -o root -g root "$src/apt-updates-check" /usr/local/sbin/apt-updates-check
+install -m 0755 -o root -g root "$src/ssh-password-check" /usr/local/sbin/ssh-password-check
 install -m 0755 -o root -g root "$src/pg-collation-check" /usr/local/sbin/pg-collation-check
 install -m 0755 -o root -g root "$src/pg-collation-fix" /usr/local/sbin/pg-collation-fix
 install -m 0644 -o root -g root "$src/login-warnings.service" /etc/systemd/system/login-warnings.service
@@ -124,6 +127,12 @@ register()
 
 echo "Registering checks:"
 register apt-updates
+if command -v sshd >/dev/null 2>&1
+then
+    register ssh-password
+else
+    echo "  ssh-password: not registered, no SSH server (sshd, package openssh-server)"
+fi
 postgresql=0
 gitlab=0
 if id postgres >/dev/null 2>&1 && command -v psql >/dev/null 2>&1
@@ -150,6 +159,7 @@ echo
 echo "Installed $(/usr/local/sbin/login-warnings --version):"
 echo "  /usr/local/sbin/login-warnings"
 echo "  /usr/local/sbin/apt-updates-check"
+echo "  /usr/local/sbin/ssh-password-check"
 echo "  /usr/local/sbin/pg-collation-check"
 echo "  /usr/local/sbin/pg-collation-fix"
 echo "  /etc/systemd/system/login-warnings.service (enabled)"
