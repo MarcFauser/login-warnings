@@ -4,6 +4,29 @@ All notable changes to this project are documented in this file.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project
 uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [4.1.0] - 2026-11-15
+
+### Changed
+
+- `ssh-password` shows the command to copy, not only a description, when password login is
+  on and writing `/etc/ssh/sshd_config.d/10-key-only.conf` switches it off: the file does not
+  exist yet and sshd would read it before the setting that says yes (sshd's default, a line
+  below the `Include`, or a file that sorts after it, such as `50-cloud-init.conf`). The
+  command is split with backslashes, so every line stays below 80 columns. Where the file
+  would not help, the section names what to change instead: the file itself when it exists,
+  the line that sshd reads first, `/etc/ssh/sshd_config` when no `Include` reads the file, or
+  the Match block that sets the value. sshd's debug output says where it reads each file and
+  setting.
+
+### Fixed
+
+- `ssh-password` never named the file and line of a `PasswordAuthentication yes` and never
+  listed Match blocks on a real server: sshd ends the lines it logs to stderr with CR LF, so
+  its debug output read "yes" as "yes" plus CR. A `yes` set in a file showed as "set by a
+  Match block", and the list of Match blocks stayed empty. The CR is removed first, also from
+  sshd's message when `sshd -T` fails. Found on the first run of 4.1.0 against a real sshd;
+  the tests had used debug output captured without the CR.
+
 ## [4.0.1] - 2026-11-14
 
 ### Fixed

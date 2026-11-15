@@ -339,3 +339,58 @@ the CR, and run against 4.0.0 it turns every state in which sshd answers into `C
 the check removes the CR first. The fallback message said "did not answer" although sshd had
 answered; it now says that no list of methods came back. After the fix the server showed `OFF`
 and `sshd offers: publickey`, one journal line per run, and `/run/login-warnings` untouched.
+
+## 2026-11-15 - 4.1.0: the command to copy
+
+While switching servers to keys only, the user asked why the section describes the fix ("set
+PasswordAuthentication and KbdInteractiveAuthentication to no, e.g. in …") instead of showing
+the `printf` line he was given each time. There was no reason on record. Three things stood in
+the way of printing it blindly: the command is 117 characters and the section keeps every line
+below 80; a `>` overwrites a drop-in that may exist already; and the drop-in only helps if sshd
+reads it before the line that says yes.
+
+- **The command is split with backslashes,** in three lines, so it fits and can be copied in
+  one piece together with the restart line. The tests run the printed lines with bash against
+  a scratch file and compare what they wrote.
+- **Where sshd would read the drop-in is taken from its debug output,** which it already reads
+  for "set in". OpenSSH 10.0p2, `servconf.c` lines 2343-2365: each Include logs `new include
+  <glob>` (relative paths made absolute under `/etc/ssh`), then `including <file>` for every
+  file in the order `glob(3)` returns them, or `no match for <glob>`. `glob` is called without
+  `GLOB_NOSORT`, and sshd sets no locale (`setlocale` appears neither in `sshd.c` nor in
+  `servconf.c`; `ssh.c` as a control has it), so the order is the C locale's. Lines 1377-1378:
+  a setting is logged only where it applies, never inside an inactive Match block, and the
+  first value wins. So the drop-in decides if sshd would reach its place - after the files of
+  that Include that sort before it, before those that sort after it and before the rest of the
+  file holding the Include - before the line that says yes, or if nothing says yes.
+- **Otherwise the section says what to change**, not a command: the drop-in itself if it
+  exists, the line sshd reads first, `/etc/ssh/sshd_config` when no Include reads the drop-in,
+  the Match block that sets the value. Two cases are left with the old wording: an Include
+  that follows a Match line (it may sit inside the block) and a glob with brackets.
+
+Tested with the fakes from 4.0.0, fed with debug output built from the real one: an empty
+`sshd_config.d` (Debian's default), the drop-in present, `yes` in `50-cloud-init.conf`, in
+`05-early.conf`, in `sshd_config` above and below the Include, in the drop-in itself and in a
+Match block, keyboard-interactive under its old name, an Include of another directory, no
+Include at all, a Match line before the Include and a glob with brackets. A copy with the
+sort comparison turned round failed five expectations.
+
+The first run against a real sshd (a Debian 13 server whose SSH already allowed keys only; a
+copy of its `sshd_config` in a folder in `/tmp` whose `Include` pointed to a test directory,
+and a copy of the check that asked sshd with `-f` for that file and wrote its result there)
+went wrong in two ways: an empty directory gave "no Include reads" instead of the command,
+and a `yes` in a file gave "set by a Match block". Shown with `cat -A`: sshd ends what it logs
+to stderr with CR LF (`log.c` line 409, `"%s%s%.*s\r\n"`), as the `ssh` client does, which
+4.0.1 had dealt with only for the client. The glob from the debug output ended in a CR and
+matched nothing, and every value read as "yes" plus CR. So 4.0.0 and 4.0.1 never showed "set
+in" or the Match blocks on a real server; "sshd's default" worked because nothing was found.
+The fixtures had been captured in a way that dropped the CR, which is why every test passed -
+the same trap as with the client's CR in 4.0.0. The fake `sshd` now adds the CR; against the
+check without the fix that turns 33 expectations red, with it none.
+
+After the fix the same server gave the expected advice in each case: the command for an empty
+directory and for `yes` in `50-cloud-init.conf` or in a Match block for another network, the
+line to change for `yes` in `05-early.conf` and above the `Include`, the existing drop-in, and
+`/etc/ssh/sshd_config` when the `Include` reads a missing directory. The printed command, run
+as printed, wrote the two lines, and the next run said `OFF`. Against the real configuration
+the check said `OFF`; the folder was removed afterwards, and the real result file stayed as it
+was.

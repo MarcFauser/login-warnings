@@ -251,7 +251,9 @@ so every section lists the Match blocks sshd reads, also those in included files
 
 ### Allowing keys only
 
-First make sure that a key login works, in a second window that stays open. Then:
+First make sure that a key login works, in a second window that stays open. Then, on a
+Debian server whose `/etc/ssh/sshd_config.d` holds no `10-key-only.conf` yet (the section
+shows these lines itself when they would work):
 
 ```bash
 printf '%s\n' 'PasswordAuthentication no' 'KbdInteractiveAuthentication no' > /etc/ssh/sshd_config.d/10-key-only.conf
@@ -264,8 +266,12 @@ sshd -t && systemctl restart ssh && ssh-password-check
 Debian's `sshd_config` includes `/etc/ssh/sshd_config.d/*.conf` near its top (line 12 in
 Debian 13), and sshd keeps the first value it reads. So this file wins over a
 `PasswordAuthentication yes` further down in `sshd_config` and over a file that sorts after it,
-such as `50-cloud-init.conf`. A value set before the `Include` line still wins; the warning
-names the file and line it comes from.
+such as `50-cloud-init.conf`. A value set before the `Include` line, or in a file that sorts
+before it, still wins. The check works this out from sshd's debug output, which names every
+file an `Include` reads, in the order sshd reads them, and the file and line of every setting.
+It shows the command only when the file would decide; otherwise it says what to change: the
+file itself when it exists already, the line sshd reads first, `/etc/ssh/sshd_config` when no
+`Include` reads the file, or the Match block that sets the value.
 
 Use `restart`, not `reload`: where sshd is socket-activated (`systemctl is-active ssh.socket`
 says `active`), `systemctl reload ssh` ends sshd with "Cannot bind any address", and only the
