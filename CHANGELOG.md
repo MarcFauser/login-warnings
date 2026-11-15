@@ -4,6 +4,18 @@ All notable changes to this project are documented in this file.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project
 uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [4.2.1] - 2026-11-15
+
+### Fixed
+
+- `apt-updates` no longer reports the fallback kernel that apt keeps when no package source
+  offers it any more. It follows apt's own rule: apt keeps the booted kernel and the newest
+  ones, `APT::NeverAutoRemove::KernelCount` in all (2, and never fewer), together with their
+  packages named in `APT::VersionedKernelPackages` (`linux-headers-<uname>` and the like).
+  Older kernels are still reported, and so is the newest one, because a newest kernel without
+  a source means the kernel gets no updates. With `APT::Protect-Kernels "false"` apt keeps
+  none, and every kernel without a source is reported.
+
 ## [4.2.0] - 2026-11-15
 
 ### Added

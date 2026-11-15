@@ -105,10 +105,23 @@ installed updates leave the list) and at boot.
 It also asks `apt-cache policy` which versions the package lists offer of every installed
 package, and names the packages whose installed version none of them offers any more. Such a
 package gets no updates, security updates included, and the simulation does not show it: its
-package source was removed or the source file emptied, or it was installed from a `.deb` file.
+package source was removed or the source file emptied, it was installed from a `.deb` file, or
+it is left over from an older Debian release (libraries such as `libssl1.1` stay installed
+after a release upgrade, and most of them are marked as installed by hand, so `apt autoremove`
+keeps them).
 `apt list '~o'` does not find all of them, because it matches only a package whose name no
 source knows: when the source of a newer version is gone and Debian still offers an older
 version under the same name, which apt never installs over the newer one, `~o` lists nothing.
+
+Old kernels show up here once their version has left the archive; `apt autoremove` removes
+them if they were installed automatically (`apt-mark showauto` lists those).
+The kernel that apt keeps as a fallback is not reported: apt keeps the running kernel and the
+newest ones, two in all unless `APT::NeverAutoRemove::KernelCount` says more, and the check
+applies the same rule. The newest kernel is reported when no source offers it, because then
+the kernel gets no updates. Proxmox VE kernels (`proxmox-kernel-*`) are not kernels to apt:
+Proxmox keeps them through `APT::NeverAutoRemove`, which the check does not read, so one would
+be reported if the Proxmox repository stopped offering it. On a Proxmox VE 9 host checked on
+2026-11-16 the repository offered every installed kernel and all older versions.
 
 | State | Section |
 | --- | --- |

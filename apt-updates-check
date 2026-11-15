@@ -216,6 +216,93 @@ no_source=$(printf '%s\n' "$policy" | awk '
     /^     [^ ]/ { current = 0; next }
     /^        [0-9]/ { if (current && $2 != "/var/lib/dpkg/status") sourced = 1; next }
     END { finish() }' | sort -u)
+
+# The fallback kernel is not reported. apt keeps installed kernels from autoremoval: the
+# booted one and the newest ones, APT::NeverAutoRemove::KernelCount in all (2, and never
+# fewer), and with each the packages named "<pattern>-<uname>" for every pattern in
+# APT::VersionedKernelPackages; the booted uname always. A kernel is an installed package
+# "linux-image-<uname>" (or kfreebsd-image-, gnumach-image-) whose uname starts with digits
+# and a dot, not ending in -dbg or -dbgsym, and its version is the package version (apt 3.0.3,
+# apt-pkg/algorithms.cc lines 1476-1629). Of these, the ones of the newest kernel stay in the
+# list: when the newest kernel has no source, the kernel gets no updates. Older kernels that
+# apt does not keep stay in the list as well; apt autoremove removes them.
+if [ -n "$no_source" ]
+then
+    aptconf=$(apt-config dump 2>/dev/null)
+    protect=$(printf '%s\n' "$aptconf" | sed -n 's/^APT::Protect-Kernels "\(.*\)";$/\1/p' | tail -n 1)
+    keep=$(printf '%s\n' "$aptconf" | sed -n 's/^APT::NeverAutoRemove::KernelCount "\(.*\)";$/\1/p' | tail -n 1)
+    patterns=$(printf '%s\n' "$aptconf" | sed -n 's/^APT::VersionedKernelPackages:: "\(.*\)";$/\1/p')
+    case $keep in
+        '' | *[!0-9]*) keep=2 ;;
+    esac
+    if [ "$keep" -lt 2 ]
+    then
+        keep=2
+    fi
+    # "<version> <uname>" of every installed kernel, from its Installed: line in the policy.
+    kernels=$(printf '%s\n' "$policy" | awk '
+        /^[^ ]/ { pkg = $0; sub(/:.*/, "", pkg); next }
+        /^  Installed: / && pkg ~ /^(linux|kfreebsd|gnumach)-image-[0-9]+\./ && pkg !~ /-dbg(sym)?$/ {
+            uname = pkg; sub(/^[a-z]+-image-/, "", uname); print $2, uname }')
+    case $protect in
+        false | no | off | without | disable | 0) kernels="" ;;
+    esac
+    if [ -n "$kernels" ] && [ -n "$patterns" ]
+    then
+        booted=$(uname -r)
+        booted_version=$(printf '%s\n' "$kernels" | awk -v u="$booted" '$2 == u { print $1; exit }')
+        # The versions, newest first, compared the way dpkg compares them.
+        remaining=$(printf '%s\n' "$kernels" | awk '{ print $1 }' | sort -u)
+        ordered=""
+        while [ -n "$remaining" ]
+        do
+            newest=""
+            for v in $remaining
+            do
+                if [ -z "$newest" ] || dpkg --compare-versions "$v" gt "$newest"
+                then
+                    newest=$v
+                fi
+            done
+            ordered="$ordered $newest"
+            remaining=$(printf '%s\n' $remaining | grep -vxF -- "$newest")
+        done
+        set -- $ordered
+        newest=$1
+        kept=$booted_version
+        count_kept=0
+        if [ -n "$booted_version" ]
+        then
+            count_kept=1
+        fi
+        for v in "$@"
+        do
+            if [ "$count_kept" -ge "$keep" ]
+            then
+                break
+            fi
+            if [ "$v" != "$booted_version" ]
+            then
+                kept="$kept $v"
+                count_kept=$((count_kept + 1))
+            fi
+        done
+        # The unames apt keeps, apart from those of the newest kernel.
+        fallback=$(printf '%s\n' "$kernels" | awk -v kept=" $kept " -v newest="$newest" \
+            'index(kept, " " $1 " ") && $1 != newest { print $2 }')
+        if ! printf '%s\n' "$kernels" | awk -v n="$newest" -v u="$booted" '$1 == n && $2 == u { f = 1 } END { exit !f }'
+        then
+            fallback="$fallback
+$booted"
+        fi
+        fallback=$(printf '%s\n' "$fallback" | grep . | sed 's/[.+]/\\&/g' | paste -sd '|' -)
+        if [ -n "$fallback" ]
+        then
+            re="^($(printf '%s\n' "$patterns" | paste -sd '|' -))-($fallback)(:[^:]+)?\$"
+            no_source=$(printf '%s\n' "$no_source" | grep -Eiv -- "$re")
+        fi
+    fi
+fi
 count_no_source=$(printf '%s' "$no_source" | grep -c .)
 
 # "Inst <package> [<installed>] (<candidate> <archives> [<arch>])" is an upgrade; a line

@@ -429,3 +429,51 @@ result, which a failed check repeats with four more, 82. The width now counts th
 Then the check ran on the container itself, from a copy that wrote its result into a temporary
 folder: orange, the ten packages, widest line 74 columns, the real result file unchanged, the
 folder removed afterwards.
+
+## 2026-11-15 - 4.2.1: not the fallback kernel
+
+The package lists of Debian 13 offered kernel images back to 6.12.90 that day, so an older
+kernel still installed would show up as a package without a source. The user wanted to see
+those, they can go, but not the fallback kernel that is always kept.
+
+What counts as kept is apt's decision, so the check follows apt's source rather than a rule of
+its own. salsa.debian.org and sources.debian.org answered with a proof-of-work page, so the
+code was read in the GitHub mirror of apt at 3.0.3; the changelog of 3.0.4, the version in
+Debian 13, lists only security fixes elsewhere. `apt-pkg/algorithms.cc`, lines 1476-1629: a
+kernel is an installed package `linux-image-<uname>` (or `kfreebsd-image-`, `gnumach-image-`)
+whose uname starts with digits and a dot; apt keeps the booted one and the newest ones by
+package version, `APT::NeverAutoRemove::KernelCount` in all and never fewer than 2, and for
+each kept uname, and always for the booted one, protects every package `<pattern>-<uname>` for
+the patterns in `APT::VersionedKernelPackages` (`linux-.*`, `.*-modules` and others). The check
+reads the same settings with `apt-config dump`, takes the installed versions from the policy it
+already has, and orders them with `dpkg --compare-versions`: by string order 6.12.117 sorts
+before 6.12.38.
+
+One deliberate difference: the newest kernel is reported when no source offers it. apt keeps
+it, but then the kernel gets no updates, which is what the section is for. And a limit: apt
+also keeps what a kept package depends on, such as `linux-headers-<version>-common` and
+`linux-kbuild-<version>` for the headers of the fallback kernel. The check does not follow
+dependencies, so those would show up once their version has left the archive.
+
+Tested with the fakes of 4.2.0 and three kernels in the format of the real policy blocks (two
+without a source, the newest with one): booted the newest, an older one, the oldest, a kernel
+without a package as in a container, `KernelCount` 3, `Protect-Kernels` false, and a single
+kernel without a source. Four broken copies failed: string order instead of dpkg's, no filter,
+the newest kernel hidden as well, and the booted kernel ignored.
+
+Then on two real servers, from a copy that wrote its result into a temporary folder, removed
+afterwards; the real result files stayed as they were. A Debian 13 VM had two kernels, both
+still in the security archive, so a plain run did not reach the filter. A wrapper around
+`apt-cache` that dropped the source lines of chosen packages let the real `apt-config`, `uname`
+and dpkg decide: without a source, the older kernel was hidden, the booted newest one shown,
+with both only the newest, and `linux-image-amd64` shown. A Proxmox VE 9 host keeps its kernels
+as `proxmox-kernel-*`, which apt does not treat as kernels; Proxmox protects them with
+`APT::NeverAutoRemove` patterns instead. Its repository offered every installed kernel and
+every older version, so the check reports none; one that lost its source would be reported,
+which the README says.
+
+Both servers showed what 4.2.0 had found on the container, at a larger scale: 44 and 36
+packages that no source offers, libraries left over from earlier Debian releases (`libssl1.0.2`
+and `gcc-6-base` from Debian 9 on the VM, `python3.9` and `perl-modules-5.32` from Debian 11 on
+the Proxmox host). On the VM 36 of the 44 were marked as installed by hand, and `apt-get -s
+autoremove` removed none of them. The README now names release upgrades among the causes.
