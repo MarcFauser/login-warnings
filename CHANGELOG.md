@@ -4,6 +4,25 @@ All notable changes to this project are documented in this file.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project
 uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [4.2.0] - 2026-11-15
+
+### Added
+
+- `apt-updates` names installed packages whose installed version no package source offers
+  any more: after a source file was removed or emptied, or for a package installed from a
+  `.deb` file. They get no updates, security updates included, and `apt-get dist-upgrade`
+  does not mention them, so the section said `none` in green. Now it turns orange, lists them
+  and shows `apt-cache policy <package>`. The check asks `apt-cache policy` about every
+  installed package, without locking and without writing apt's cache files; if that or
+  `dpkg-query` fails, the section shows `CHECK FAILED` with the last successful result, as it
+  does when the simulation fails.
+
+### Fixed
+
+- Wrapped lines of `apt-updates` could reach 80 columns, and 82 in the last successful result
+  that a failed check repeats with four more columns: the wrap width did not count the
+  indentation. Every line now stays below 80, also there.
+
 ## [4.1.0] - 2026-11-15
 
 ### Changed

@@ -32,7 +32,7 @@ Three checks so far:
 
 | Check | Reports |
 | --- | --- |
-| `apt-updates` | Package updates offered by the package lists, by name, security updates separately, and how old the lists are. |
+| `apt-updates` | Package updates offered by the package lists, by name, security updates separately, how old the lists are, and installed packages that no package source offers any more. |
 | `pg-collation` | PostgreSQL databases whose collation version no longer matches glibc, with a fix script. Covers the Debian/PGDG clusters and the PostgreSQL bundled with the GitLab Linux package. |
 | `ssh-password` | Whether the SSH server accepts password logins, where the setting comes from, and how to allow keys only. |
 
@@ -102,6 +102,14 @@ without locking and without writing apt's cache files, so it can run while apt o
 working. It runs after every apt update (by hand or from the timer), after every dpkg run (so
 installed updates leave the list) and at boot.
 
+It also asks `apt-cache policy` which versions the package lists offer of every installed
+package, and names the packages whose installed version none of them offers any more. Such a
+package gets no updates, security updates included, and the simulation does not show it: its
+package source was removed or the source file emptied, or it was installed from a `.deb` file.
+`apt list '~o'` does not find all of them, because it matches only a package whose name no
+source knows: when the source of a newer version is gone and Debian still offers an older
+version under the same name, which apt never installs over the newer one, `~o` lists nothing.
+
 | State | Section |
 | --- | --- |
 | no updates | `Package updates: none` (green) |
@@ -110,6 +118,7 @@ installed updates leave the list) and at boot.
 | last apt update reached no repository or did not finish | an extra line saying so (orange) |
 | lists older than two days | an extra line: the daily apt update has not run (orange) |
 | no apt update since installation | an extra line asking for `apt update` (orange) |
+| installed packages that no package source offers | an extra line naming them and `show: apt-cache policy <package>` (orange) |
 | check failed | `Package updates: CHECK FAILED` with apt's error, then the last successful result (orange); exit status 1 |
 
 Below the title every section shows how old the lists are, when the check ran and how to run

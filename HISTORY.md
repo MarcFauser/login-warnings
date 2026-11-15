@@ -394,3 +394,38 @@ line to change for `yes` in `05-early.conf` and above the `Include`, the existin
 as printed, wrote the two lines, and the next run said `OFF`. Against the real configuration
 the check said `OFF`; the folder was removed afterwards, and the real result file stayed as it
 was.
+
+## 2026-11-15 - 4.2.0: packages that no source offers any more
+
+The user asked why a Debian 13 container with MariaDB 12.1 from MariaDB's own repository was not
+offered a newer MariaDB. Its source file had been empty since February, so apt knew 12.1.2 only
+from `/var/lib/dpkg/status`, and Debian's own 11.8 is older, which apt never installs over a
+newer version. Ten packages could not get any update for nine months, security updates
+included, and since login-warnings was installed there, the login had said `Package updates:
+none` in green: the simulation only lists what it would install. The user asked for a warning.
+
+- **The installed version is compared, not the package name.** `apt list '~o'` (obsolete
+  packages) was empty on that server, because Debian knows every one of the ten names. `apt-cache
+  policy` lists every version of a package with the files it comes from, and the installed one
+  is marked `***`; a version whose only file is `/var/lib/dpkg/status` has no source. It runs
+  without locking and without apt's cache files, like the simulation, and took about a second
+  for the whole check there.
+- **dpkg and apt name packages differently.** `dpkg-query` names a package of the native
+  architecture with it (`libmariadb3:amd64`), `apt-cache policy` prints `libmariadb3:`. The first
+  fake for the tests used the dpkg form and silently dropped `libmariadb3`; the expected list of
+  ten names caught it.
+- **A package without a source counts like a security update** and makes the section orange, as
+  it can never get one.
+
+Tested with fakes for `apt-get`, `apt-cache` and `dpkg-query` fed with the output captured on
+that container: the real state, the same without the ten packages (green), one package, an
+update next to them, a package of a foreign architecture and one no source knows at all, and
+`apt-cache` and `dpkg-query` failing. Three deliberately broken copies failed: one that took
+every version as sourced, one that looked at all versions instead of the installed one, and the
+old wrap width. That last one was a bug of its own: `wrap` folded at 76 columns and then added
+the indentation, so a line with four columns of it could reach 80, and the last successful
+result, which a failed check repeats with four more, 82. The width now counts the indentation.
+
+Then the check ran on the container itself, from a copy that wrote its result into a temporary
+folder: orange, the ten packages, widest line 74 columns, the real result file unchanged, the
+folder removed afterwards.

@@ -19,6 +19,12 @@
 # there means the last apt update reached no repository or did not finish. A single failing
 # repository among working ones does not show up here; apt update itself reports it.
 #
+# The check also names installed packages whose installed version no package source offers
+# any more. They get no updates, security updates included, and apt-get dist-upgrade does not
+# mention them: what happens when a source file is emptied or removed, or a package came from
+# a .deb file. apt-cache policy lists every version with the files it comes from; a version
+# that only /var/lib/dpkg/status knows has no source.
+#
 # Runs after every boot, dpkg run and apt update (login-warnings). Run it by hand at any
 # time, as root.
 #
@@ -129,10 +135,12 @@ orange=$(printf '\033[38;5;208m')
 green=$(printf '\033[32m')
 reset=$(printf '\033[0m')
 
-# Text wrapped below 80 columns and indented by the given prefix.
+# Text wrapped at word boundaries and indented by the given prefix, so that every line stays
+# below 80 columns, also in the last successful result that a failed check repeats with four
+# more columns of indentation.
 wrap()
 {
-    fold -s -w 76 | sed 's/ *$//' | sed "s/^/$1/"
+    fold -s -w $((75 - ${#1})) | sed 's/ *$//' | sed "s/^/$1/"
 }
 
 # The result is one section of the login display: a title line with the state, the details
@@ -140,16 +148,18 @@ wrap()
 footer="  checked $checked_at ($checked_by)
   check again: apt-updates-check"
 
-if [ "$sim_status" -ne 0 ]
-then
-    if [ "$sim_status" -eq 124 ]
+# Writes the CHECK FAILED section, with the last successful result below it, and exits 1.
+# $1 what failed (one line), $2 the command's output, $3 its exit status, $4 the stderr note.
+check_failed()
+{
+    if [ "$3" -eq 124 ]
     then
         errors="    did not finish within 60 seconds"
     else
-        errors=$(printf '%s\n' "$sim" | grep '^E:' | head -n 3 | wrap '    ')
+        errors=$(printf '%s\n' "$2" | grep -E '^(E:|dpkg-query:)' | head -n 3 | wrap '    ')
         if [ -z "$errors" ]
         then
-            errors="    exit status $sim_status"
+            errors="    exit status $3"
         fi
     fi
     if [ -s "$LAST" ]
@@ -159,15 +169,54 @@ $(sed 's/^/    /' "$LAST")"
     else
         last="  no successful check since boot"
     fi
-    printf '%sPackage updates: CHECK FAILED\n  apt-get could not simulate the upgrade:\n%s\n%s\n%s%s\n' \
-        "$orange" "$errors" "$footer" "$last" "$reset" | publish "$FILE"
-    echo "apt-updates-check: apt-get -s dist-upgrade failed." >&2
+    printf '%sPackage updates: CHECK FAILED\n  %s\n%s\n%s\n%s%s\n' \
+        "$orange" "$1" "$errors" "$footer" "$last" "$reset" | publish "$FILE"
+    echo "apt-updates-check: $4" >&2
     if [ "$quiet" -eq 0 ]
     then
         cat "$FILE"
     fi
     exit 1
+}
+
+if [ "$sim_status" -ne 0 ]
+then
+    check_failed "apt-get could not simulate the upgrade:" "$sim" "$sim_status" \
+        "apt-get -s dist-upgrade failed."
 fi
+
+# The installed packages, and every version apt knows of them with the files it comes from.
+# Without locking and without writing apt's cache files, like the simulation above.
+installed_status=0
+installed=$(dpkg-query -W -f='${db:Status-Abbrev} ${binary:Package}\n' 2>&1) || installed_status=$?
+if [ "$installed_status" -ne 0 ]
+then
+    check_failed "dpkg-query could not list the installed packages:" "$installed" \
+        "$installed_status" "dpkg-query -W failed."
+fi
+policy_status=0
+policy=$(printf '%s\n' "$installed" | awk '$1 == "ii" { print $2 }' | LC_ALL=C timeout 60 \
+    xargs -r apt-cache -o Dir::Cache::pkgcache= -o Dir::Cache::srcpkgcache= policy 2>&1) \
+    || policy_status=$?
+if [ "$policy_status" -ne 0 ]
+then
+    check_failed "apt-cache could not list the package versions:" "$policy" "$policy_status" \
+        "apt-cache policy failed."
+fi
+
+# In the version table of "apt-cache policy" the installed version is the line " *** <version>
+# <priority>", other versions start with five spaces, and the files a version comes from follow
+# it with eight: "        500 http://deb.debian.org/debian trixie/main amd64 Packages" or
+# "        100 /var/lib/dpkg/status". A package whose installed version has only the second one
+# has no source.
+no_source=$(printf '%s\n' "$policy" | awk '
+    function finish() { if (pkg != "" && seen && !sourced) print pkg; pkg = "" }
+    /^[^ ]/ { finish(); pkg = $0; sub(/:$/, "", pkg); seen = 0; sourced = 0; current = 0; next }
+    /^ \*\*\* / { seen = 1; current = 1; next }
+    /^     [^ ]/ { current = 0; next }
+    /^        [0-9]/ { if (current && $2 != "/var/lib/dpkg/status") sourced = 1; next }
+    END { finish() }' | sort -u)
+count_no_source=$(printf '%s' "$no_source" | grep -c .)
 
 # "Inst <package> [<installed>] (<candidate> <archives> [<arch>])" is an upgrade; a line
 # without "[<installed>]" is a package that gets newly installed. A candidate from a security
@@ -223,9 +272,10 @@ then
     problem="the daily apt update has not run since; check: systemctl status apt-daily.timer"
 fi
 
-# Pending updates alone are no reason for alarm: plain, unless security updates or a problem
-# with the lists make it orange; green when there is nothing to do.
-if [ "$count_security" -gt 0 ] || [ -n "$problem" ]
+# Pending updates alone are no reason for alarm: plain, unless security updates, a problem
+# with the lists or packages without a source make it orange; green when there is nothing to
+# do. A package without a source never gets a security update, so it counts like one.
+if [ "$count_security" -gt 0 ] || [ -n "$problem" ] || [ "$count_no_source" -gt 0 ]
 then
     colour=$orange
 elif [ "$count" -eq 0 ]
@@ -258,6 +308,19 @@ fi
     if [ -n "$problem" ]
     then
         printf '%s\n' "$problem" | wrap '  '
+    fi
+    if [ "$count_no_source" -gt 0 ]
+    then
+        if [ "$count_no_source" -eq 1 ]
+        then
+            what="1 installed package, so it gets"
+        else
+            what="$count_no_source installed packages, so they get"
+        fi
+        printf '%s\n' "no package source offers the installed version of $what no updates:" \
+            | wrap '  '
+        printf '%s\n' "$(printf '%s\n' "$no_source" | tr '\n' ' ')" | wrap '    '
+        echo "  show: apt-cache policy $(printf '%s\n' "$no_source" | head -n 1)"
     fi
     printf '%s%s\n' "$footer" "$reset"
 } | publish "$FILE"
