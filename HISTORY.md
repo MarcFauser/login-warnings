@@ -477,3 +477,24 @@ packages that no source offers, libraries left over from earlier Debian releases
 and `gcc-6-base` from Debian 9 on the VM, `python3.9` and `perl-modules-5.32` from Debian 11 on
 the Proxmox host). On the VM 36 of the 44 were marked as installed by hand, and `apt-get -s
 autoremove` removed none of them. The README now names release upgrades among the causes.
+
+## 2026-11-16 - 4.3.0: updates orange, security updates red
+
+During the rollout of 4.2.1 the user asked for other colours: pending updates showed in the
+terminal's normal colour, which in his terminal reads as light green and so close to the
+all-clear, and he wanted them orange, and security updates red. This turns round the choice of
+3.0.0, where updates alone stayed plain so that an always-orange section would not teach
+anyone to ignore it; with red for what is urgent, orange can mean "something to do" again.
+
+- Red is index 196 of the 256-colour palette, next to orange as index 208, so neither depends
+  on the terminal's colour scheme.
+- Packages that no source offers turn red too. Since 4.2.0 they counted like a security
+  update, because they never get one; the rule stays.
+- A problem with the lists alone (no apt update yet, old lists, an apt update that reached no
+  repository) stays orange, like `CHECK FAILED` in every check: it says the result may be
+  incomplete, not that something urgent is waiting.
+
+Tested with the fakes of 4.2.x, extended by an update without security, a security update and
+lists three days old. The security update is a real simulation line, captured on a Debian 13
+server by simulating the reinstall of a package from the security archive. Run against the same
+tests, 4.2.1 failed the four expectations whose colour changed and passed the others.

@@ -2,7 +2,8 @@
 
 Warnings that every interactive login shell on a Debian server shows, in every terminal
 window. Each check writes one section of the display into `/run/login-warnings`, always with
-the time it ran: green when all is well, orange when something needs attention.
+the time it ran: green when all is well, orange when something needs attention, red for
+security updates.
 
 ```
 ----- login-warnings v4.0.0 --------------------------------------------
@@ -126,16 +127,17 @@ be reported if the Proxmox repository stopped offering it. On a Proxmox VE 9 hos
 | State | Section |
 | --- | --- |
 | no updates | `Package updates: none` (green) |
-| updates | `Package updates: 3 (0 security)`, the package names (plain) |
-| security updates among them | `Package updates: 3 (2 security)`, a `security:` and an `other:` line (orange) |
+| updates | `Package updates: 3 (0 security)`, the package names (orange) |
+| security updates among them | `Package updates: 3 (2 security)`, a `security:` and an `other:` line (red) |
 | last apt update reached no repository or did not finish | an extra line saying so (orange) |
 | lists older than two days | an extra line: the daily apt update has not run (orange) |
 | no apt update since installation | an extra line asking for `apt update` (orange) |
-| installed packages that no package source offers | an extra line naming them and `show: apt-cache policy <package>` (orange) |
+| installed packages that no package source offers | an extra line naming them and `show: apt-cache policy <package>` (red, as they get no security updates) |
 | check failed | `Package updates: CHECK FAILED` with apt's error, then the last successful result (orange); exit status 1 |
 
 Below the title every section shows how old the lists are, when the check ran and how to run
-it again.
+it again. The whole section takes the colour of its most serious line: red before orange
+before green.
 
 Two days is the limit for old lists because `apt.systemd.daily` refreshes once per calendar
 day and `apt-daily.timer` (6:00 and 18:00, up to 12 hours random delay) runs at least once

@@ -4,9 +4,10 @@
 # Lists the package updates the package lists on disk offer and writes them to
 # /run/login-warnings/apt-updates; login-warnings shows that file in every interactive login
 # shell, as one section of its display. The file always says when the check ran and how old
-# the package lists are: green "none", the updates by name (orange when security updates are
-# among them or the lists are in doubt), or an orange "CHECK FAILED" followed by the last
-# successful result (kept in /run/login-warnings/.apt-updates.last).
+# the package lists are: green "none", the updates by name (orange, red when security updates
+# or packages without a source are among them), orange when the lists are in doubt, or an
+# orange "CHECK FAILED" followed by the last successful result (kept in
+# /run/login-warnings/.apt-updates.last).
 #
 # Nothing is downloaded. The check simulates "apt-get dist-upgrade" without locking and
 # without writing apt's cache files, so it is safe while apt or dpkg is running. The lists
@@ -130,7 +131,10 @@ mkdir -p -m 0755 "$DIR"
 checked_at=$(date '+%Y-%m-%d %H:%M:%S %:z')
 now=$(date '+%s')
 
-# Orange (index 208 of the 256-colour palette) for problems, green for the all-clear.
+# Red (index 196 of the 256-colour palette) for security updates, orange (index 208) for other
+# updates and for problems, green for the all-clear. Palette indexes, not the terminal's own
+# red, so the colour does not depend on the terminal's scheme.
+red=$(printf '\033[38;5;196m')
 orange=$(printf '\033[38;5;208m')
 green=$(printf '\033[32m')
 reset=$(printf '\033[0m')
@@ -359,17 +363,17 @@ then
     problem="the daily apt update has not run since; check: systemctl status apt-daily.timer"
 fi
 
-# Pending updates alone are no reason for alarm: plain, unless security updates, a problem
-# with the lists or packages without a source make it orange; green when there is nothing to
-# do. A package without a source never gets a security update, so it counts like one.
-if [ "$count_security" -gt 0 ] || [ -n "$problem" ] || [ "$count_no_source" -gt 0 ]
+# Red for security updates and for packages without a source (they never get a security
+# update, so they count like one), orange for other updates and for a problem with the lists,
+# green when there is nothing to do.
+if [ "$count_security" -gt 0 ] || [ "$count_no_source" -gt 0 ]
+then
+    colour=$red
+elif [ "$count" -gt 0 ] || [ -n "$problem" ]
 then
     colour=$orange
-elif [ "$count" -eq 0 ]
-then
-    colour=$green
 else
-    colour=""
+    colour=$green
 fi
 
 {

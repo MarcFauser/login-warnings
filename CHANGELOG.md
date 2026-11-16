@@ -4,6 +4,16 @@ All notable changes to this project are documented in this file.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project
 uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [4.3.0] - 2026-11-16
+
+### Changed
+
+- `apt-updates` shows pending updates in orange instead of the terminal's normal colour, and
+  security updates in red (index 196 of the 256-colour palette) instead of orange. Installed
+  packages that no package source offers are red as well, as they get no security updates.
+  A problem with the package lists without any update stays orange, `none` stays green and
+  `CHECK FAILED` stays orange.
+
 ## [4.2.1] - 2026-11-15
 
 ### Fixed
