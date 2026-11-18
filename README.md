@@ -143,13 +143,17 @@ needs. A package with config files left must stay when its purge would
   (`pve-kernel-helper` and `proxmox-boot-cleanup.service` of `proxmox-kernel-helper`;
   `ifupdown` and `networking.service` of `ifupdown2`),
 - delete a file that an installed package owns or has registered with `ucf` (`grub-pc` and
-  `/etc/default/grub` on a host that boots with `grub-efi-amd64`), or
+  `/etc/default/grub` on a host that boots with `grub-efi-amd64`); a path that the script
+  builds with a variable or a wildcard (`rm /etc/nginx/modules-enabled/$to`) stands for what
+  lies below its beginning, not for the directory it stops in, or
 - delete a conffile from its own file list that another installed package owns.
 
 The others can go. The first two were seen on real servers; the third is a precaution and has
 not been seen: when a conffile moves to another package, dpkg normally takes it off the old
 package's list (as with `/etc/magic` from `libmagic1` to `libmagic1t64`). None of this is a
-proof: the check reads the `postrm`, it does not run it.
+proof: the check reads the `postrm`, it does not run it. Nor can it see a `postrm` that deletes
+data no package owns, such as a database or a data directory: for a package of software that
+keeps data, read the script before purging it.
 
 Should a conffile ever be in the way, the package can still be purged and the file brought
 back by its owner: `apt install --reinstall -o Dpkg::Options::=--force-confmiss <owner>`

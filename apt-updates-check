@@ -464,12 +464,13 @@ EOF
 }
 
 # Removed packages whose config files are left (dpkg state rc). Purging one runs its postrm with
-# "purge", and three things in it break what an installed package needs, all seen on real
-# servers: a unit switched off with deb-systemd-helper that an installed package now ships
-# (pve-kernel-helper, ifupdown next to ifupdown2), a file deleted that an installed package
-# owns or has registered with ucf (grub-pc's /etc/default/grub on a host booting with
-# grub-efi-amd64), and a conffile in its own file list that another installed package owns.
-# Such a package must stay; the others can go. One that cannot be checked stays.
+# "purge", and three things in it break what an installed package needs: a unit switched off
+# with deb-systemd-helper that an installed package now ships (pve-kernel-helper, ifupdown next
+# to ifupdown2), a file deleted that an installed package owns or has registered with ucf
+# (grub-pc's /etc/default/grub on a host booting with grub-efi-amd64), both seen on real
+# servers, and a conffile in its own file list that another installed package owns, a
+# precaution not seen yet. Such a package must stay; the others can go. One that cannot be
+# checked stays. Data that no package owns (a database, a data directory) is not seen.
 rc_go=""
 rc_keep=""
 # The second letter of the state is what is installed: "c" for config files only, whether the
@@ -523,13 +524,26 @@ do
     fi
     if [ -z "$reason" ] && [ -n "$postrm" ]
     then
-        for f in $(grep -oE "(rm( +-[A-Za-z]+)*|ucf +--purge|ucfr +--purge +[^ ]+) +[\"']?/[^ ;|&\$*?\"'\`]+" "$postrm" \
+        # A path that a variable or a wildcard cuts short ("rm /etc/nginx/modules-enabled/$to")
+        # names what lies below its beginning, not the directory it stops in: the libnginx-mod-*
+        # packages delete only their own links in nginx-common's modules-enabled. Such a path
+        # becomes a pattern, <beginning>*, which dpkg -S matches against the files packages own;
+        # in the ucf registry it matches every file that starts with the beginning. Read line by
+        # line, so that the shell does not expand the pattern against the disk.
+        paths=$(grep -oE "(rm( +-[A-Za-z]+)*|ucf +--purge|ucfr +--purge +[^ ]+) +[\"']?/[^ ;|&\$*?\"'\`]+[\$*?]?" "$postrm" \
             | awk '{ print $NF }' | sed "s/^[\"']//" | sort -u)
+        while IFS= read -r f
         do
+            [ -n "$f" ] || continue
+            prefix=""
+            case $f in
+                *[\$*?]) prefix=${f%?}; f="$prefix*" ;;
+            esac
             owner=$(owners "$f" "$name" | head -n 1)
             if [ -z "$owner" ] && [ -f "$UCF_REGISTRY" ]
             then
-                owner=$(awk -v f="$f" -v self="$name" '$2 == f && $1 != self { print $1 }' "$UCF_REGISTRY" \
+                owner=$(awk -v f="$f" -v pre="$prefix" -v self="$name" \
+                    '($2 == f || (pre != "" && index($2, pre) == 1)) && $1 != self { print $1 }' "$UCF_REGISTRY" \
                     | grep -xF -f /dev/fd/3 3<<EOF | head -n 1
 $installed_names
 EOF
@@ -537,10 +551,17 @@ EOF
             fi
             if [ -n "$owner" ]
             then
-                reason="its purge would delete $f of $owner"
+                if [ -n "$prefix" ]
+                then
+                    reason="its purge would delete files below $prefix, among them files of $owner"
+                else
+                    reason="its purge would delete $f of $owner"
+                fi
                 break
             fi
-        done
+        done <<EOF
+$paths
+EOF
     fi
     if [ -n "$reason" ]
     then

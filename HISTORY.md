@@ -565,3 +565,29 @@ purge still has the last word. Tested with a new fake case for all three (partne
 partner provided, partner missing); two copies with the rule taken out, one without the
 alternatives and one without `Provides`, failed exactly there. On the server, from a copy in a
 temporary folder, all 19 were then left over and the command named them.
+
+## 2026-11-18 - 5.0.3: a path that stops at a variable
+
+The next server had no packages without a source but 16 removed packages with config files,
+and 5.0.2 kept six of them: `libnginx-mod-*`, "its purge would delete /etc/nginx/modules-enabled/
+of nginx-common". Their `postrm` deletes `/etc/nginx/modules-enabled/$to` and `$to.removed`,
+its own links, which on that server were six dead `.removed` links from 2022. The pattern that
+finds paths in a `postrm` stops at the first `$`, so the path became the directory, and
+`dpkg -S` names nginx-common as its owner. The check said "must stay" for a purge that only
+removes leftovers.
+
+A path cut short by a variable or a wildcard now stands for what lies below its beginning.
+`dpkg -S` takes `<beginning>*` as a pattern over the files that packages own, and `*` there does
+not match the directory itself: measured on the server, `/etc/nginx/modules-enabled/*` found no
+owner while `/etc/nginx/sites-available/*` found nginx-common's `default`. The paths are read
+line by line, because a shell loop over them would expand the pattern against the disk.
+
+The round also raised the other limit: the server before had two removed XWiki packages, and a
+`postrm` that drops a database or deletes a data directory would not show up in any of the
+three rules, because data belongs to no package. Their scripts were read by hand
+and did nothing of the kind; the README and the comment above the rules now say that the check
+cannot see this.
+
+Tested with a fake case built from the real `postrm` lines next to one that deletes below a
+directory with an owned file; a copy that cuts the path as before failed there. On the server,
+from a temporary copy, all 16 could then go.

@@ -4,6 +4,18 @@ All notable changes to this project are documented in this file.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project
 uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [5.0.3] - 2026-11-18
+
+### Fixed
+
+- `apt-updates` read a path in a `postrm` up to the first variable, so `rm
+  /etc/nginx/modules-enabled/$to` became the directory `/etc/nginx/modules-enabled/`, which
+  nginx-common owns, and six `libnginx-mod-*` packages that delete only their own links there
+  were listed as config files that must stay. Such a path now stands for what lies below its
+  beginning: dpkg -S gets it as a pattern, and the ucf registry is searched by its beginning.
+- The comment above the rules and the README say that the check cannot see a `postrm` that
+  deletes data no package owns, such as a database.
+
 ## [5.0.2] - 2026-11-18
 
 ### Fixed
