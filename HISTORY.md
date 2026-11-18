@@ -513,13 +513,14 @@ packages, list them separately and stay green, and added that running the patter
 everything is the dangerous part, so a command that removes only what is superfluous would be
 good in the output.
 
-- **Config files of removed packages** are new in the section. The three traps became three
-  rules on the `postrm` script and the conffiles: a unit given to `deb-systemd-helper purge`
-  that an installed package ships, a path the script deletes that an installed package owns
-  (`dpkg -S`) or has registered (`/var/lib/ucf/registry`), a conffile in the package's own
-  file list that another installed package owns. Those that must stay are listed with the
-  reason and leave the section green, as the user asked; those that can go make it orange.
-  The rules are what three real cases showed, not a proof, and the README says so. The state
+- **Config files of removed packages** are new in the section. The three traps became two
+  rules on the `postrm` script: a unit given to `deb-systemd-helper purge` that an installed
+  package ships, and a path the script deletes that an installed package owns (`dpkg -S`) or
+  has registered (`/var/lib/ucf/registry`). A third rule, a conffile in the package's own file
+  list that another installed package owns, came from the script used for the manual cleanup
+  and has not been seen on a server (5.0.0 said otherwise; corrected in 5.0.1). Those that
+  must stay are listed with the reason and leave the section green, as the user asked; those
+  that can go make it orange. The rules are not a proof, and the README says so. The state
   is read from its second letter: on one container `ifupdown` was `ic`, not `rc`, and a filter
   on `rc` would have missed exactly the case the trap was found in.
 - **Packages without a source** are split, and here the user's wish was turned round: a

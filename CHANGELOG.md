@@ -4,6 +4,16 @@ All notable changes to this project are documented in this file.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project
 uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [5.0.1] - 2026-11-18
+
+### Fixed
+
+- README and HISTORY said that all three rules for config files that must stay came from real
+  servers. Two did (a unit switched off, a file registered with ucf); the third, a conffile
+  that another installed package owns, is a precaution that no server has shown. The README
+  now also says how to bring such a file back after a purge (`--force-confmiss`). The scripts
+  are unchanged.
+
 ## [5.0.0] - 2026-11-18
 
 ### Added

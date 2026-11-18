@@ -144,8 +144,15 @@ needs. A package with config files left must stay when its purge would
   `/etc/default/grub` on a host that boots with `grub-efi-amd64`), or
 - delete a conffile from its own file list that another installed package owns.
 
-The others can go. These are the cases seen so far, not a proof: the check reads the `postrm`,
-it does not run it.
+The others can go. The first two were seen on real servers; the third is a precaution and has
+not been seen: when a conffile moves to another package, dpkg normally takes it off the old
+package's list (as with `/etc/magic` from `libmagic1` to `libmagic1t64`). None of this is a
+proof: the check reads the `postrm`, it does not run it.
+
+Should a conffile ever be in the way, the package can still be purged and the file brought
+back by its owner: `apt install --reinstall -o Dpkg::Options::=--force-confmiss <owner>`
+installs config files that are missing. Local changes to the file are lost that way, so keep a
+copy first.
 
 ### The command
 
