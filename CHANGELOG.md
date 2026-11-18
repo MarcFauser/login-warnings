@@ -4,6 +4,27 @@ All notable changes to this project are documented in this file.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project
 uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [5.0.0] - 2026-11-18
+
+### Added
+
+- `apt-updates` names the config files of removed packages (dpkg state `rc` or `ic`), split
+  into those that can go and those that must stay, each with the reason: purging it would
+  switch off a systemd unit that an installed package ships, or delete a file that an installed
+  package owns or has registered with ucf, or a conffile that another installed package owns.
+  Config files that must stay do not change the colour; those that can go make it orange.
+- When something can go, the section ends with an `apt purge` command naming exactly those
+  packages, split over several lines when it is long, without `-y`.
+
+### Changed
+
+- Installed packages that no source offers are split into those in use and those left over.
+  In use (red, as before): a running process maps one of their files, they ship an enabled or
+  active systemd unit, they are the running kernel or one apt keeps, or an installed package
+  depends on them, directly or through a package in use. Left over (orange): nothing of that,
+  and apt's simulated purge of them takes nothing else along. Only the leftovers go into the
+  command.
+
 ## [4.3.0] - 2026-11-16
 
 ### Changed

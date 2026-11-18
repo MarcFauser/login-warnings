@@ -33,7 +33,7 @@ Three checks so far:
 
 | Check | Reports |
 | --- | --- |
-| `apt-updates` | Package updates offered by the package lists, by name, security updates separately, how old the lists are, and installed packages that no package source offers any more. |
+| `apt-updates` | Package updates offered by the package lists, by name, security updates separately, how old the lists are, installed packages that no package source offers any more (in use, or left over from an older release), config files of removed packages that can go or must stay, and the `apt purge` command for exactly what can go. |
 | `pg-collation` | PostgreSQL databases whose collation version no longer matches glibc, with a fix script. Covers the Debian/PGDG clusters and the PostgreSQL bundled with the GitLab Linux package. |
 | `ssh-password` | Whether the SSH server accepts password logins, where the setting comes from, and how to allow keys only. |
 
@@ -114,12 +114,54 @@ keeps them).
 source knows: when the source of a newer version is gone and Debian still offers an older
 version under the same name, which apt never installs over the newer one, `~o` lists nothing.
 
-Old kernels show up here once their version has left the archive; `apt autoremove` removes
-them if they were installed automatically (`apt-mark showauto` lists those).
-The kernel that apt keeps as a fallback is not reported: apt keeps the running kernel and the
-newest ones, two in all unless `APT::NeverAutoRemove::KernelCount` says more, and the check
-applies the same rule. The newest kernel is reported when no source offers it, because then
-the kernel gets no updates. Proxmox VE kernels (`proxmox-kernel-*`) are not kernels to apt:
+### In use or left over
+
+A package without a source is either software that runs and gets no updates, the urgent case,
+or a leftover that nothing needs. The check tells them apart and lists them separately:
+
+- **In use** (red): a running process has one of its files mapped (a library or the
+  executable), it ships a systemd unit that is enabled or active, it is the running kernel or
+  one that apt keeps, or an installed package depends on it, directly or through another
+  package in use. A package that depends on one in use belongs to the same software and is in
+  use too, like `mariadb-server-compat` next to `mariadb-server`.
+- **Left over** (orange): nothing of the above. apt's simulated purge of all leftovers must
+  remove nothing else; if it would, they all count as in use. "Now" is the limit: a program
+  that only runs now and then, from cron or by hand, is not seen.
+
+A package that cannot be checked counts as in use.
+
+### Config files of removed packages
+
+A package removed without purging leaves its config files and the dpkg state `rc` (or `ic`).
+Debian's release notes advise `apt purge '?config-files'` after a release upgrade, but purging
+runs the package's `postrm` script, and on real servers that broke what an installed package
+needs. A package with config files left must stay when its purge would
+
+- switch off a systemd unit with `deb-systemd-helper` that an installed package now ships
+  (`pve-kernel-helper` and `proxmox-boot-cleanup.service` of `proxmox-kernel-helper`;
+  `ifupdown` and `networking.service` of `ifupdown2`),
+- delete a file that an installed package owns or has registered with `ucf` (`grub-pc` and
+  `/etc/default/grub` on a host that boots with `grub-efi-amd64`), or
+- delete a conffile from its own file list that another installed package owns.
+
+The others can go. These are the cases seen so far, not a proof: the check reads the `postrm`,
+it does not run it.
+
+### The command
+
+When something can go, the section ends with an `apt purge` command that names exactly the
+leftovers and the config files that can go, never a pattern like `'?obsolete'`, which would
+take packages in use and config files that must stay along. It has no `-y`: apt lists what it
+would remove and asks first. Long commands are split with backslashes so that they can be
+copied in one piece.
+
+### Kernels
+
+Old kernels show up as left over once their version has left the archive, and the command
+names them. The kernel that apt keeps as a fallback is not reported: apt keeps the running
+kernel and the newest ones, two in all unless `APT::NeverAutoRemove::KernelCount` says more, and
+the check applies the same rule. The newest kernel is reported as in use when no source offers
+it, because then the kernel gets no updates. Proxmox VE kernels (`proxmox-kernel-*`) are not kernels to apt:
 Proxmox keeps them through `APT::NeverAutoRemove`, which the check does not read, so one would
 be reported if the Proxmox repository stopped offering it. On a Proxmox VE 9 host checked on
 2026-11-16 the repository offered every installed kernel and all older versions.
@@ -132,7 +174,11 @@ be reported if the Proxmox repository stopped offering it. On a Proxmox VE 9 hos
 | last apt update reached no repository or did not finish | an extra line saying so (orange) |
 | lists older than two days | an extra line: the daily apt update has not run (orange) |
 | no apt update since installation | an extra line asking for `apt update` (orange) |
-| installed packages that no package source offers | an extra line naming them and `show: apt-cache policy <package>` (red, as they get no security updates) |
+| installed packages in use that no package source offers | an extra line naming them and `show: apt-cache policy <package>` (red, as they get no security updates) |
+| packages left over without a source | `left over, without a source and not in use now:` and their names (orange) |
+| config files of removed packages that can go | `config files of removed packages that can go:` and their names (orange) |
+| config files that must stay | `config files of removed packages that must stay:`, each with the reason (no change of colour) |
+| something can go | `remove what can go`, then the `apt purge` command for exactly those packages |
 | check failed | `Package updates: CHECK FAILED` with apt's error, then the last successful result (orange); exit status 1 |
 
 Below the title every section shows how old the lists are, when the check ran and how to run

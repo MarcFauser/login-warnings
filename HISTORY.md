@@ -498,3 +498,50 @@ Tested with the fakes of 4.2.x, extended by an update without security, a securi
 lists three days old. The security update is a real simulation line, captured on a Debian 13
 server by simulating the reinstall of a package from the security archive. Run against the same
 tests, 4.2.1 failed the four expectations whose colour changed and passed the others.
+
+## 2026-11-18 - 5.0.0: what can go, what must stay, and the command
+
+Cleaning up after 4.2.1 found 13 to 44 libraries per server left over from Debian 9 to 12, and
+Debian 13's release notes advise `apt purge '?obsolete'` and `apt purge '?config-files'`. Done
+by hand, server by server, three config-file packages turned out to break something when
+purged: `pve-kernel-helper` switches off `proxmox-boot-cleanup.service`, which
+`proxmox-kernel-helper` now ships; `ifupdown` next to `ifupdown2` switches off
+`networking.service`, which brings up the network of a container; `grub-pc` on a host that
+boots with `grub-efi-amd64` deletes `/etc/default/grub`, which grub-efi-amd64 has registered
+with ucf, and can delete `/boot/grub`. The user asked whether the check could tell such
+packages, list them separately and stay green, and added that running the patterns on
+everything is the dangerous part, so a command that removes only what is superfluous would be
+good in the output.
+
+- **Config files of removed packages** are new in the section. The three traps became three
+  rules on the `postrm` script and the conffiles: a unit given to `deb-systemd-helper purge`
+  that an installed package ships, a path the script deletes that an installed package owns
+  (`dpkg -S`) or has registered (`/var/lib/ucf/registry`), a conffile in the package's own
+  file list that another installed package owns. Those that must stay are listed with the
+  reason and leave the section green, as the user asked; those that can go make it orange.
+  The rules are what three real cases showed, not a proof, and the README says so. The state
+  is read from its second letter: on one container `ifupdown` was `ic`, not `rc`, and a filter
+  on `rc` would have missed exactly the case the trap was found in.
+- **Packages without a source** are split, and here the user's wish was turned round: a
+  package in use without a source is the case 4.2.0 was made for (MariaDB 12.1 running for
+  nine months without updates), so it stays red, and the leftovers became orange. In use
+  means: a running process maps one of its files, it ships an enabled or active unit, it is
+  the running kernel or one apt keeps, or an installed package depends on it, directly or
+  through a package in use. The last part covers a compat package that nothing depends on
+  but that belongs to software in use. The kernel names mapped files by the resolved path, and
+  packages from older releases list `/lib/...`, which is `/usr/lib` on Debian 13, so the
+  package's paths are resolved first. A simulated purge of the leftovers has the last word: if
+  it would take anything else along, they all count as in use.
+- **The command** names the leftovers and the config files that can go, never a pattern, and
+  has no `-y`, so apt shows its list and asks.
+
+Tested with the fakes, extended by fake `dpkg -L`/`-S`, `systemctl`, `/proc/<pid>/maps`, dpkg's
+info directory and the ucf registry: MariaDB running and not running, a package mapped through
+`/lib`, one needed by an installed package, a purge that would take another package along, the
+running kernel with kernel protection off, and the three traps with `postrm` lines quoted from
+the real scripts. Six copies with one rule taken out each failed exactly in their test. Then
+on two servers from a copy that wrote into a temporary folder: on a PBS host with `grub-pc` and
+`pve-kernel-helper` both were named as must stay with the right reason and the section stayed
+green; on another, with the source of three packages hidden from the check, the PBS server
+package and `libssl3t64` were in use and `less` left over, with `apt purge less`. That `less`
+counts as left over shows the limit the README names: not in use means not in use now.

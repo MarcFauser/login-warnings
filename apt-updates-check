@@ -5,9 +5,9 @@
 # /run/login-warnings/apt-updates; login-warnings shows that file in every interactive login
 # shell, as one section of its display. The file always says when the check ran and how old
 # the package lists are: green "none", the updates by name (orange, red when security updates
-# or packages without a source are among them), orange when the lists are in doubt, or an
-# orange "CHECK FAILED" followed by the last successful result (kept in
-# /run/login-warnings/.apt-updates.last).
+# or packages in use without a source are among them), orange when the lists are in doubt or
+# something can be removed, or an orange "CHECK FAILED" followed by the last successful result
+# (kept in /run/login-warnings/.apt-updates.last).
 #
 # Nothing is downloaded. The check simulates "apt-get dist-upgrade" without locking and
 # without writing apt's cache files, so it is safe while apt or dpkg is running. The lists
@@ -24,7 +24,10 @@
 # any more. They get no updates, security updates included, and apt-get dist-upgrade does not
 # mention them: what happens when a source file is emptied or removed, or a package came from
 # a .deb file. apt-cache policy lists every version with the files it comes from; a version
-# that only /var/lib/dpkg/status knows has no source.
+# that only /var/lib/dpkg/status knows has no source. It tells the ones in use (red: they run
+# and get no updates) from the ones left over from an older release (orange), names the
+# config files of removed packages that can go and those that must stay, and prints the
+# "apt purge" command for exactly what can go, never a pattern like '?obsolete'.
 #
 # Runs after every boot, dpkg run and apt update (login-warnings). Run it by hand at any
 # time, as root.
@@ -39,6 +42,11 @@ FILE=$DIR/apt-updates
 # Hidden from the login display: the last successful result.
 LAST=$DIR/.apt-updates.last
 STATE=/var/lib/login-warnings
+# Read to tell packages in use from leftovers, and config files that must stay from those that
+# can go.
+PROC=/proc
+INFO=/var/lib/dpkg/info
+UCF_REGISTRY=/var/lib/ucf/registry
 
 usage()
 {
@@ -230,6 +238,7 @@ no_source=$(printf '%s\n' "$policy" | awk '
 # apt-pkg/algorithms.cc lines 1476-1629). Of these, the ones of the newest kernel stay in the
 # list: when the newest kernel has no source, the kernel gets no updates. Older kernels that
 # apt does not keep stay in the list as well; apt autoremove removes them.
+kept_re=""
 if [ -n "$no_source" ]
 then
     aptconf=$(apt-config dump 2>/dev/null)
@@ -291,6 +300,12 @@ then
                 count_kept=$((count_kept + 1))
             fi
         done
+        # The packages of every kernel apt keeps, the newest one's included, are in use; that
+        # the newest one stays in the list below makes it count as in use there.
+        kept_unames=$(printf '%s\n' "$kernels" | awk -v kept=" $kept " 'index(kept, " " $1 " ") { print $2 }')
+        kept_unames=$(printf '%s\n%s\n' "$kept_unames" "$booted" | grep . | sort -u \
+            | sed 's/[.+]/\\&/g' | paste -sd '|' -)
+        kept_re="^($(printf '%s\n' "$patterns" | paste -sd '|' -))-($kept_unames)(:[^:]+)?\$"
         # The unames apt keeps, apart from those of the newest kernel.
         fallback=$(printf '%s\n' "$kernels" | awk -v kept=" $kept " -v newest="$newest" \
             'index(kept, " " $1 " ") && $1 != newest { print $2 }')
@@ -308,6 +323,223 @@ $booted"
     fi
 fi
 count_no_source=$(printf '%s' "$no_source" | grep -c .)
+
+# The installed packages by name, without the architecture.
+installed_names=$(printf '%s\n' "$installed" | awk '$1 ~ /^.i/ { n = $2; sub(/:.*/, "", n); print n }' \
+    | LC_ALL=C sort -u)
+
+# Packages without a source that something still uses, and those left over. In use: a running
+# process has one of its files mapped (a library or the executable), it ships a systemd unit
+# that is enabled or active, it is the kernel that runs or one apt keeps, or an installed
+# package depends on it, directly or through another package in use. The rest is left over,
+# from an older Debian release or a removed source: nothing runs it and nothing needs it. A
+# simulated purge of the leftovers must take nothing else along, or they all count as in use;
+# a package that cannot be checked counts as in use. In use is the urgent case: software that
+# runs and gets no updates.
+in_use=""
+leftover=""
+if [ "$count_no_source" -gt 0 ]
+then
+    # The kernel names the files a process maps by their resolved path (/usr/lib on Debian 13,
+    # where /lib is a link to usr/lib), and packages from older releases list /lib/..., so the
+    # files of a package are resolved before they are compared.
+    mapped=$(cat "$PROC"/[0-9]*/maps 2>/dev/null | awk '$6 ~ /^\// { print $6 }' | LC_ALL=C sort -u)
+    # "<package> <dependency>" for every installed package, names without architecture.
+    deps=$(dpkg-query -W -f='${db:Status-Abbrev}\t${binary:Package}\t${Depends}, ${Pre-Depends}\n' 2>/dev/null \
+        | awk -F '\t' '$1 ~ /^.i/ { n = $2; sub(/:.*/, "", n); k = split($3, d, /[,|]/)
+            for (i = 1; i <= k; i++) { x = d[i]; sub(/^ +/, "", x); sub(/[ (].*/, "", x); sub(/:.*/, "", x)
+                if (x != "") print n, x } }')
+    booted=$(uname -r)
+    candidates=""
+    for p in $no_source
+    do
+        if ! files=$(dpkg -L "$p" 2>/dev/null)
+        then
+            in_use="$in_use $p"
+            continue
+        fi
+        case $p in
+            *-"$booted" | *-"$booted":*)
+                in_use="$in_use $p"
+                continue ;;
+        esac
+        if [ -n "$kept_re" ] && printf '%s\n' "$p" | grep -Eiq -- "$kept_re"
+        then
+            in_use="$in_use $p"
+            continue
+        fi
+        if [ -n "$mapped" ] && printf '%s\n' "$files" | xargs -r -d '\n' realpath -eq -- 2>/dev/null \
+            | LC_ALL=C sort -u | LC_ALL=C comm -12 - /dev/fd/3 3<<EOF | grep -q .
+$mapped
+EOF
+        then
+            in_use="$in_use $p"
+            continue
+        fi
+        unit_on=0
+        for u in $(printf '%s\n' "$files" | grep -E '^/(usr/)?lib/systemd/system/[^/@]+\.(service|socket|timer)$' \
+            | sed 's|.*/||' | sort -u)
+        do
+            if [ "$(systemctl is-enabled "$u" 2>/dev/null)" = enabled ] \
+                || [ "$(systemctl is-active "$u" 2>/dev/null)" = active ]
+            then
+                unit_on=1
+                break
+            fi
+        done
+        if [ "$unit_on" -eq 1 ]
+        then
+            in_use="$in_use $p"
+            continue
+        fi
+        candidates="$candidates $p"
+    done
+    # A candidate is in use when a package outside the candidates depends on it (a purge would
+    # take that package along), or when it depends on a package in use itself (it belongs to
+    # that software, like mariadb-server-compat to mariadb-server). Until nothing changes.
+    changed=1
+    while [ "$changed" -eq 1 ] && [ -n "$candidates" ]
+    do
+        changed=0
+        names=" $(printf '%s\n' $candidates | sed 's/:.*//' | tr '\n' ' ')"
+        used=" $(printf '%s\n' $in_use | sed 's/:.*//' | tr '\n' ' ')"
+        remaining=""
+        for p in $candidates
+        do
+            if printf '%s\n' "$deps" | awk -v n="${p%%:*}" -v cand="$names" -v used="$used" \
+                '($2 == n && !index(cand, " " $1 " ")) || ($1 == n && index(used, " " $2 " ")) { f = 1 }
+                 END { exit !f }'
+            then
+                in_use="$in_use $p"
+                changed=1
+            else
+                remaining="$remaining $p"
+            fi
+        done
+        candidates=$remaining
+    done
+    if [ -n "$candidates" ]
+    then
+        purge_sim_status=0
+        purge_sim=$(LC_ALL=C timeout 60 apt-get -s -o Debug::NoLocking=1 -o Dir::Cache::pkgcache= \
+            -o Dir::Cache::srcpkgcache= purge $candidates 2>&1) || purge_sim_status=$?
+        names=" $(printf '%s\n' $candidates | sed 's/:.*//' | tr '\n' ' ')"
+        beyond=$(printf '%s\n' "$purge_sim" | awk -v cand="$names" \
+            '/^(Purg|Remv) / { n = $2; sub(/:.*/, "", n); if (!index(cand, " " n " ")) print n }')
+        if [ "$purge_sim_status" -ne 0 ] || [ -n "$beyond" ]
+        then
+            in_use="$in_use $candidates"
+        else
+            leftover=$candidates
+        fi
+    fi
+    in_use=$(printf '%s\n' $in_use | LC_ALL=C sort -u)
+    leftover=$(printf '%s\n' $leftover | LC_ALL=C sort -u)
+fi
+count_in_use=$(printf '%s' "$in_use" | grep -c .)
+count_leftover=$(printf '%s' "$leftover" | grep -c .)
+
+# The installed packages that own a path, apart from the given package; dpkg -S names them as
+# "<package>[, <package>...]: <path>", and diversions as "diversion by ...".
+owners()
+{
+    dpkg -S "$1" 2>/dev/null | grep -v '^diversion ' | sed 's|: /.*$||' | tr ',' '\n' \
+        | sed 's/^ *//; s/:.*//' | grep -vxF -- "$2" | grep -xF -f /dev/fd/3 3<<EOF
+$installed_names
+EOF
+}
+
+# Removed packages whose config files are left (dpkg state rc). Purging one runs its postrm with
+# "purge", and three things in it break what an installed package needs, all seen on real
+# servers: a unit switched off with deb-systemd-helper that an installed package now ships
+# (pve-kernel-helper, ifupdown next to ifupdown2), a file deleted that an installed package
+# owns or has registered with ucf (grub-pc's /etc/default/grub on a host booting with
+# grub-efi-amd64), and a conffile in its own file list that another installed package owns.
+# Such a package must stay; the others can go. One that cannot be checked stays.
+rc_go=""
+rc_keep=""
+# The second letter of the state is what is installed: "c" for config files only, whether the
+# first, the wanted action, says remove ("rc") or install ("ic", seen for ifupdown).
+rc=$(printf '%s\n' "$installed" | awk '$1 ~ /^.c/ { print $2 }' | LC_ALL=C sort -u)
+arch=$(dpkg --print-architecture 2>/dev/null)
+for p in $rc
+do
+    name=${p%%:*}
+    postrm=""
+    list=""
+    # dpkg keeps the scripts and the file list of a Multi-Arch: same package as <name>:<arch>.
+    for f in "$INFO/$p" "$INFO/$name" "$INFO/$name:$arch"
+    do
+        [ -z "$postrm" ] && [ -f "$f.postrm" ] && postrm=$f.postrm
+        [ -z "$list" ] && [ -f "$f.list" ] && list=$f.list
+    done
+    reason=""
+    if [ -n "$postrm" ]
+    then
+        for u in $(grep -oE "deb-systemd-helper +(purge|disable|mask) +'?[A-Za-z0-9@_.:-]+\.(service|socket|timer|path|mount|target)" \
+            "$postrm" | sed "s/.*[ ']//" | sort -u)
+        do
+            owner=$( { owners "/usr/lib/systemd/system/$u" "$name"; owners "/lib/systemd/system/$u" "$name"; } | head -n 1)
+            if [ -n "$owner" ]
+            then
+                reason="its purge would switch off $u of $owner"
+                break
+            fi
+        done
+    fi
+    if [ -z "$reason" ]
+    then
+        if conffiles=$(dpkg-query -W -f='${Conffiles}\n' "$p" 2>/dev/null)
+        then
+            for f in $(printf '%s\n' "$conffiles" | awk 'NF { print $1 }')
+            do
+                if [ -n "$list" ] && grep -qxF -- "$f" "$list"
+                then
+                    owner=$(owners "$f" "$name" | head -n 1)
+                    if [ -n "$owner" ]
+                    then
+                        reason="its purge would delete $f of $owner"
+                        break
+                    fi
+                fi
+            done
+        else
+            reason="it could not be checked"
+        fi
+    fi
+    if [ -z "$reason" ] && [ -n "$postrm" ]
+    then
+        for f in $(grep -oE "(rm( +-[A-Za-z]+)*|ucf +--purge|ucfr +--purge +[^ ]+) +[\"']?/[^ ;|&\$*?\"'\`]+" "$postrm" \
+            | awk '{ print $NF }' | sed "s/^[\"']//" | sort -u)
+        do
+            owner=$(owners "$f" "$name" | head -n 1)
+            if [ -z "$owner" ] && [ -f "$UCF_REGISTRY" ]
+            then
+                owner=$(awk -v f="$f" -v self="$name" '$2 == f && $1 != self { print $1 }' "$UCF_REGISTRY" \
+                    | grep -xF -f /dev/fd/3 3<<EOF | head -n 1
+$installed_names
+EOF
+)
+            fi
+            if [ -n "$owner" ]
+            then
+                reason="its purge would delete $f of $owner"
+                break
+            fi
+        done
+    fi
+    if [ -n "$reason" ]
+    then
+        rc_keep="$rc_keep
+$p: $reason"
+    else
+        rc_go="$rc_go $p"
+    fi
+done
+rc_go=$(printf '%s\n' $rc_go | grep .)
+rc_keep=$(printf '%s\n' "$rc_keep" | grep .)
+count_rc_go=$(printf '%s' "$rc_go" | grep -c .)
+count_rc_keep=$(printf '%s' "$rc_keep" | grep -c .)
 
 # "Inst <package> [<installed>] (<candidate> <archives> [<arch>])" is an upgrade; a line
 # without "[<installed>]" is a package that gets newly installed. A candidate from a security
@@ -363,18 +595,41 @@ then
     problem="the daily apt update has not run since; check: systemctl status apt-daily.timer"
 fi
 
-# Red for security updates and for packages without a source (they never get a security
-# update, so they count like one), orange for other updates and for a problem with the lists,
-# green when there is nothing to do.
-if [ "$count_security" -gt 0 ] || [ "$count_no_source" -gt 0 ]
+# Red for security updates and for packages in use that no source offers (they never get a
+# security update, so they count like one), orange for other updates, for leftovers and config
+# files that can go, and for a problem with the lists; green when there is nothing to do.
+# Config files that must stay are listed and change nothing.
+if [ "$count_security" -gt 0 ] || [ "$count_in_use" -gt 0 ]
 then
     colour=$red
-elif [ "$count" -gt 0 ] || [ -n "$problem" ]
+elif [ "$count" -gt 0 ] || [ -n "$problem" ] || [ "$count_leftover" -gt 0 ] || [ "$count_rc_go" -gt 0 ]
 then
     colour=$orange
 else
     colour=$green
 fi
+
+# "<n> package(s)", singular for one.
+packages()
+{
+    if [ "$1" -eq 1 ]
+    then
+        echo "1 package"
+    else
+        echo "$1 packages"
+    fi
+}
+
+# The words on stdin as an "apt purge" command, split with backslashes so that every line
+# stays below 80 columns and the lines can be copied in one piece.
+purge_command()
+{
+    tr ' ' '\n' | grep . | awk -v ind="$1" '
+        BEGIN { line = ind "apt purge" }
+        { if (length(line) + 1 + length($0) > 73) { print line " \\"; line = ind "  " $0 }
+          else line = line " " $0 }
+        END { print line }'
+}
 
 {
     printf '%s' "$colour"
@@ -400,18 +655,41 @@ fi
     then
         printf '%s\n' "$problem" | wrap '  '
     fi
-    if [ "$count_no_source" -gt 0 ]
+    if [ "$count_in_use" -gt 0 ]
     then
-        if [ "$count_no_source" -eq 1 ]
+        if [ "$count_in_use" -eq 1 ]
         then
-            what="1 installed package, so it gets"
+            what="1 package in use, so it gets"
         else
-            what="$count_no_source installed packages, so they get"
+            what="$count_in_use packages in use, so they get"
         fi
         printf '%s\n' "no package source offers the installed version of $what no updates:" \
             | wrap '  '
-        printf '%s\n' "$(printf '%s\n' "$no_source" | tr '\n' ' ')" | wrap '    '
-        echo "  show: apt-cache policy $(printf '%s\n' "$no_source" | head -n 1)"
+        printf '%s\n' "$(printf '%s\n' "$in_use" | tr '\n' ' ')" | wrap '    '
+        echo "  show: apt-cache policy $(printf '%s\n' "$in_use" | head -n 1)"
+    fi
+    if [ "$count_leftover" -gt 0 ]
+    then
+        printf '%s\n' "left over, without a source and not in use now: $(packages "$count_leftover")" | wrap '  '
+        printf '%s\n' "$(printf '%s\n' "$leftover" | tr '\n' ' ')" | wrap '    '
+    fi
+    if [ "$count_rc_go" -gt 0 ]
+    then
+        printf '%s\n' "config files of removed packages that can go: $(packages "$count_rc_go")" | wrap '  '
+        printf '%s\n' "$(printf '%s\n' "$rc_go" | tr '\n' ' ')" | wrap '    '
+    fi
+    if [ "$count_rc_keep" -gt 0 ]
+    then
+        printf '%s\n' "config files of removed packages that must stay: $(packages "$count_rc_keep")" | wrap '  '
+        printf '%s\n' "$rc_keep" | while IFS= read -r line
+        do
+            printf '%s\n' "$line" | wrap '      ' | sed '1s/^      /    /'
+        done
+    fi
+    if [ "$count_leftover" -gt 0 ] || [ "$count_rc_go" -gt 0 ]
+    then
+        echo "  remove what can go (apt lists it and asks first):"
+        printf '%s\n' $leftover $rc_go | purge_command '    '
     fi
     printf '%s%s\n' "$footer" "$reset"
 } | publish "$FILE"
