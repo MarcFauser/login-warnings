@@ -4,6 +4,24 @@ All notable changes to this project are documented in this file.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project
 uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [5.0.4] - 2026-11-18
+
+### Fixed
+
+- `apt-updates` resolved each file of a package without a source before comparing it with the
+  files processes map, links included. A link to another package's library, like
+  `libatomic.so` in an old `libgcc-10-dev`, made the old package in use, and with it every
+  package that depends on it: on one server 43 compilers and libraries from Debian 8 to 11
+  were red. Only the directories are resolved now (`/lib` is `/usr/lib`).
+- A dependency on a package without a source made it in use even when an installed package
+  with a source provides it (`libgcc1`, provided by `libgcc-s1`). A dependency now counts only
+  when no installed package with a source meets it, by name or as something it provides; 5.0.2
+  did this for alternatives only.
+- A removed package whose `postrm` deletes a link to a file of an installed package was listed
+  as one whose config files can go. `pgdg-keyring` deletes
+  `/etc/apt/trusted.gpg.d/apt.postgresql.org.gpg`, the link to `postgresql-client-common`'s key
+  through which apt trusts the PostgreSQL repository; it now must stay.
+
 ## [5.0.3] - 2026-11-18
 
 ### Fixed

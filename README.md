@@ -123,9 +123,13 @@ or a leftover that nothing needs. The check tells them apart and lists them sepa
   executable), it ships a systemd unit that is enabled or active, it is the running kernel or
   one that apt keeps, or an installed package depends on it, directly or through another
   package in use. A package that depends on one in use belongs to the same software and is in
-  use too, like `mariadb-server-compat` next to `mariadb-server`. In an alternative
-  (`media-types | mime-support`) a member counts only when no other member is installed with a
-  source, by name or as something such a package provides.
+  use too, like `mariadb-server-compat` next to `mariadb-server`. A dependency counts only when
+  no installed package with a source satisfies it, by name or as something it provides: in
+  `media-types | mime-support` an installed `media-types` is enough, and a dependency on
+  `libgcc1` is met by `libgcc-s1`, which provides it. A package's files are compared with the
+  mapped ones after resolving their directories (`/lib` is `/usr/lib`), not the files
+  themselves: a link a package ships to another package's library (`libatomic.so` in
+  `libgcc-10-dev`) does not make it in use.
 - **Left over** (orange): nothing of the above. apt's simulated purge of all leftovers must
   remove nothing else; if it would, they all count as in use. "Now" is the limit: a program
   that only runs now and then, from cron or by hand, is not seen.
@@ -145,10 +149,13 @@ needs. A package with config files left must stay when its purge would
 - delete a file that an installed package owns or has registered with `ucf` (`grub-pc` and
   `/etc/default/grub` on a host that boots with `grub-efi-amd64`); a path that the script
   builds with a variable or a wildcard (`rm /etc/nginx/modules-enabled/$to`) stands for what
-  lies below its beginning, not for the directory it stops in, or
+  lies below its beginning, not for the directory it stops in,
+- delete a link that nobody owns but that points to a file of an installed package
+  (`pgdg-keyring` and `/etc/apt/trusted.gpg.d/apt.postgresql.org.gpg`, through which apt
+  trusts the PostgreSQL repository with the key of `postgresql-client-common`), or
 - delete a conffile from its own file list that another installed package owns.
 
-The others can go. The first two were seen on real servers; the third is a precaution and has
+The others can go. The first three were seen on real servers; the last is a precaution and has
 not been seen: when a conffile moves to another package, dpkg normally takes it off the old
 package's list (as with `/etc/magic` from `libmagic1` to `libmagic1t64`). None of this is a
 proof: the check reads the `postrm`, it does not run it. Nor can it see a `postrm` that deletes

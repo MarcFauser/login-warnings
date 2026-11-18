@@ -591,3 +591,34 @@ cannot see this.
 Tested with a fake case built from the real `postrm` lines next to one that deletes below a
 directory with an owned file; a copy that cuts the path as before failed there. On the server,
 from a temporary copy, all 16 could then go.
+
+## 2026-11-18 - 5.0.4: links, provided names, and a key for apt
+
+A server upgraded release by release since Debian 8 had 71 packages without a source, and
+5.0.3 called 43 of them in use, red: four generations of gcc, their libraries, `libgcc1`.
+Nothing of them ran. Two rules were wrong.
+
+The files of a package were resolved with `realpath` before they were compared with the files
+processes map. That was meant for `/lib`, a link to `/usr/lib` on Debian 13, but it also
+follows links that a package ships to files of another package: an old `libgcc-10-dev` has
+`libatomic.so` pointing to `libatomic.so.1` of `libatomic1`, which half the processes map. Now
+only the directories are resolved, and the file keeps its name. The dependencies did the rest:
+everything that depends on the old gcc libraries followed them.
+
+`libgcc1` itself was in use because installed packages still depend on it by that name.
+`libgcc-s1` provides it. 5.0.2 had taught the check that an alternative is met by any installed
+member; a single name met by a provider is the same case, and now a dependency counts only when
+no installed package with a source meets it.
+
+On the same server, `pgdg-keyring`, removed long ago, would have been listed as one that can
+go. Its `postrm` deletes `/etc/apt/trusted.gpg.d/apt.postgresql.org.gpg`, a link nobody owns,
+pointing to `postgresql-client-common`'s copy of the key; the PostgreSQL repository there has
+no `signed-by`, so apt trusts it only through that link. None of the rules saw it, because the
+link belongs to no package. A link that the `postrm` deletes and that points to a file of an
+installed package now keeps the package: something set it up for that package.
+
+Tested with two fake cases (a link into another package plus a provided dependency; the key
+link next to a plain file nobody owns); three copies with one of the fixes taken out failed
+exactly there, and two copies of 5.0.2/5.0.3 rules no longer matched the code and were
+rewritten for it. On the server, from a temporary copy, all 71 were left over and
+`pgdg-keyring` must stay, next to `grub-pc`.

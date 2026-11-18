@@ -328,6 +328,26 @@ count_no_source=$(printf '%s' "$no_source" | grep -c .)
 installed_names=$(printf '%s\n' "$installed" | awk '$1 ~ /^.i/ { n = $2; sub(/:.*/, "", n); print n }' \
     | LC_ALL=C sort -u)
 
+# Prints the paths read from stdin with their directory resolved and the last part kept. The
+# kernel names a mapped file by its real directory (/usr/lib on Debian 13, where /lib is a link
+# to usr/lib), and packages from older releases list /lib/...; but a link that a package ships
+# to a file of another package is not that file: libgcc-10-dev's
+# /usr/lib/gcc/x86_64-linux-gnu/10/libatomic.so points to libatomic1's library, which runs
+# whether or not libgcc-10-dev is there.
+resolve_dirs()
+{
+    rd_paths=$(cat)
+    rd_dirs=$(printf '%s\n' "$rd_paths" | sed -n 's|^\(/.*\)/[^/]*$|\1|p' | LC_ALL=C sort -u)
+    [ -n "$rd_dirs" ] || return 0
+    rd_real=$(printf '%s\n' "$rd_dirs" | xargs -r -d '\n' realpath -m -- 2>/dev/null)
+    { printf '%s\n' "$rd_dirs" | paste - /dev/fd/4 4<<EOF | sed 's/^/D\t/'
+$rd_real
+EOF
+      printf '%s\n' "$rd_paths"; } \
+        | awk -F '\t' '$1 == "D" { r[$2] = $3; next }
+            { d = $0; sub(/\/[^\/]*$/, "", d); if (d in r) print r[d] substr($0, length(d) + 1) }'
+}
+
 # Packages without a source that something still uses, and those left over. In use: a running
 # process has one of its files mapped (a library or the executable), it ships a systemd unit
 # that is enabled or active, it is the kernel that runs or one apt keeps, or an installed
@@ -340,15 +360,15 @@ in_use=""
 leftover=""
 if [ "$count_no_source" -gt 0 ]
 then
-    # The kernel names the files a process maps by their resolved path (/usr/lib on Debian 13,
-    # where /lib is a link to usr/lib), and packages from older releases list /lib/..., so the
-    # files of a package are resolved before they are compared.
+    # The files that processes map, compared with each package's files after resolve_dirs.
     mapped=$(cat "$PROC"/[0-9]*/maps 2>/dev/null | awk '$6 ~ /^\// { print $6 }' | LC_ALL=C sort -u)
-    # "<package> <dependency>" for every installed package, names without architecture. A member
-    # of an alternative ("a | b") counts only when no other member is installed with a source,
-    # by name or as something such a package provides: python3.13 depends on "media-types |
-    # mime-support", and with media-types installed it does not need mime-support. The names
-    # without a source come first, marked N, so the awk knows them before it reads the packages.
+    # "<package> <dependency>" for every installed package, names without architecture. A
+    # dependency counts only when no installed package with a source satisfies it, by name or as
+    # something it provides, whether it names one package or an alternative ("a | b"): python3.13
+    # depends on "media-types | mime-support", and with media-types installed it does not need
+    # mime-support; packages that still depend on libgcc1 get it from libgcc-s1, which provides
+    # it. The names without a source come first, marked N, so the awk knows them before it reads
+    # the packages.
     deps=$( { printf '%s\n' $no_source | sed 's/:.*//; s/^/N\t/'
             dpkg-query -W -f='${db:Status-Abbrev}\t${binary:Package}\t${Provides}\t${Depends}, ${Pre-Depends}\n' 2>/dev/null
         } | awk -F '\t' '
@@ -360,9 +380,9 @@ then
             END { for (j = 1; j <= c; j++) { g = split(dep[j], grp, /,/)
                 for (i = 1; i <= g; i++) { a = split(grp[i], alt, /[|]/); m = 0
                     for (h = 1; h <= a; h++) { x = bare(alt[h]); if (x != "") name[++m] = x }
-                    for (h = 1; h <= m; h++) { other = 0
-                        for (o = 1; o <= m; o++) if (o != h && (name[o] in have)) other = 1
-                        if (!other) print pkg[j], name[h] } } } }')
+                    met = 0
+                    for (h = 1; h <= m; h++) if (name[h] in have) met = 1
+                    if (!met) for (h = 1; h <= m; h++) print pkg[j], name[h] } } }')
     booted=$(uname -r)
     candidates=""
     for p in $no_source
@@ -382,7 +402,7 @@ then
             in_use="$in_use $p"
             continue
         fi
-        if [ -n "$mapped" ] && printf '%s\n' "$files" | xargs -r -d '\n' realpath -eq -- 2>/dev/null \
+        if [ -n "$mapped" ] && printf '%s\n' "$files" | resolve_dirs \
             | LC_ALL=C sort -u | LC_ALL=C comm -12 - /dev/fd/3 3<<EOF | grep -q .
 $mapped
 EOF
@@ -464,13 +484,15 @@ EOF
 }
 
 # Removed packages whose config files are left (dpkg state rc). Purging one runs its postrm with
-# "purge", and three things in it break what an installed package needs: a unit switched off
+# "purge", and four things in it break what an installed package needs: a unit switched off
 # with deb-systemd-helper that an installed package now ships (pve-kernel-helper, ifupdown next
 # to ifupdown2), a file deleted that an installed package owns or has registered with ucf
-# (grub-pc's /etc/default/grub on a host booting with grub-efi-amd64), both seen on real
-# servers, and a conffile in its own file list that another installed package owns, a
-# precaution not seen yet. Such a package must stay; the others can go. One that cannot be
-# checked stays. Data that no package owns (a database, a data directory) is not seen.
+# (grub-pc's /etc/default/grub on a host booting with grub-efi-amd64), a link deleted that
+# points to a file of an installed package (pgdg-keyring and the PostgreSQL repository key),
+# all three seen on real servers, and a conffile in its own file list that another installed
+# package owns, a precaution not seen yet. Such a package must stay; the others can go. One
+# that cannot be checked stays. Data that no package owns (a database, a data directory) is not
+# seen.
 rc_go=""
 rc_keep=""
 # The second letter of the state is what is installed: "c" for config files only, whether the
@@ -558,6 +580,20 @@ EOF
                     reason="its purge would delete $f of $owner"
                 fi
                 break
+            fi
+            # A link nobody owns that points to a file of an installed package ties that package
+            # in: pgdg-keyring deletes /etc/apt/trusted.gpg.d/apt.postgresql.org.gpg, the link
+            # through which apt trusts the PostgreSQL repository with postgresql-client-common's
+            # key.
+            if [ -z "$prefix" ] && [ -L "$f" ]
+            then
+                target=$(realpath -m -- "$f" 2>/dev/null)
+                owner=$(owners "$target" "$name" | head -n 1)
+                if [ -n "$owner" ]
+                then
+                    reason="its purge would delete the link $f to $target of $owner"
+                    break
+                fi
             fi
         done <<EOF
 $paths
