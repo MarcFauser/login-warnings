@@ -344,11 +344,25 @@ then
     # where /lib is a link to usr/lib), and packages from older releases list /lib/..., so the
     # files of a package are resolved before they are compared.
     mapped=$(cat "$PROC"/[0-9]*/maps 2>/dev/null | awk '$6 ~ /^\// { print $6 }' | LC_ALL=C sort -u)
-    # "<package> <dependency>" for every installed package, names without architecture.
-    deps=$(dpkg-query -W -f='${db:Status-Abbrev}\t${binary:Package}\t${Depends}, ${Pre-Depends}\n' 2>/dev/null \
-        | awk -F '\t' '$1 ~ /^.i/ { n = $2; sub(/:.*/, "", n); k = split($3, d, /[,|]/)
-            for (i = 1; i <= k; i++) { x = d[i]; sub(/^ +/, "", x); sub(/[ (].*/, "", x); sub(/:.*/, "", x)
-                if (x != "") print n, x } }')
+    # "<package> <dependency>" for every installed package, names without architecture. A member
+    # of an alternative ("a | b") counts only when no other member is installed with a source,
+    # by name or as something such a package provides: python3.13 depends on "media-types |
+    # mime-support", and with media-types installed it does not need mime-support. The names
+    # without a source come first, marked N, so the awk knows them before it reads the packages.
+    deps=$( { printf '%s\n' $no_source | sed 's/:.*//; s/^/N\t/'
+            dpkg-query -W -f='${db:Status-Abbrev}\t${binary:Package}\t${Provides}\t${Depends}, ${Pre-Depends}\n' 2>/dev/null
+        } | awk -F '\t' '
+            function bare(x) { sub(/^ +/, "", x); sub(/[ (].*/, "", x); sub(/:.*/, "", x); return x }
+            $1 == "N" { ns[$2] = 1; next }
+            $1 ~ /^.i/ { n = bare($2); c++; pkg[c] = n; dep[c] = $4
+                if (!(n in ns)) { have[n] = 1; k = split($3, p, /,/)
+                    for (i = 1; i <= k; i++) { x = bare(p[i]); if (x != "") have[x] = 1 } } }
+            END { for (j = 1; j <= c; j++) { g = split(dep[j], grp, /,/)
+                for (i = 1; i <= g; i++) { a = split(grp[i], alt, /[|]/); m = 0
+                    for (h = 1; h <= a; h++) { x = bare(alt[h]); if (x != "") name[++m] = x }
+                    for (h = 1; h <= m; h++) { other = 0
+                        for (o = 1; o <= m; o++) if (o != h && (name[o] in have)) other = 1
+                        if (!other) print pkg[j], name[h] } } } }')
     booted=$(uname -r)
     candidates=""
     for p in $no_source

@@ -4,6 +4,16 @@ All notable changes to this project are documented in this file.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project
 uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [5.0.2] - 2026-11-18
+
+### Fixed
+
+- `apt-updates` counted every member of an alternative in a dependency as needed. With
+  `python3.13` depending on `media-types | mime-support` and `media-types` installed, a left
+  over `mime-support` showed as in use (red), and with it the Python 3.11 libraries that depend
+  on it, and the `apt purge` command left them out. A member now counts only when no other
+  member is installed with a source, by name or as something such a package provides.
+
 ## [5.0.1] - 2026-11-18
 
 ### Fixed

@@ -546,3 +546,22 @@ on two servers from a copy that wrote into a temporary folder: on a PBS host wit
 green; on another, with the source of three packages hidden from the check, the PBS server
 package and `libssl3t64` were in use and `less` left over, with `apt purge less`. That `less`
 counts as left over shows the limit the README names: not in use means not in use now.
+
+## 2026-11-18 - 5.0.2: an alternative is not a dependency
+
+The first server of the rollout after 5.0.1, a Debian 13 VM upgraded from Debian 12, had 19
+packages without a source. 5.0.1 called three of them in use: `mime-support` and the two Python
+3.11 libraries. No process mapped their files, and apt's simulated purge of all 19 took nothing
+else along. The cause was the dependency list: it split `Depends` at `|` as well as at `,`, so
+`python3.13`, which depends on `media-types | mime-support`, counted as needing
+`mime-support`, although `media-types` was installed. The Python 3.11 libraries depend on
+`mime-support` and followed it. The error kept packages rather than removing them, but it
+showed red for software that does not run, and the `apt purge` line left the three out.
+
+A member of an alternative now counts only when no other member is installed with a source,
+by name or as something such a package provides. A member whose partner is only virtual and
+not provided still counts, which keeps a package rather than removing it, and the simulated
+purge still has the last word. Tested with a new fake case for all three (partner installed,
+partner provided, partner missing); two copies with the rule taken out, one without the
+alternatives and one without `Provides`, failed exactly there. On the server, from a copy in a
+temporary folder, all 19 were then left over and the command named them.

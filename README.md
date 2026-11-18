@@ -123,7 +123,9 @@ or a leftover that nothing needs. The check tells them apart and lists them sepa
   executable), it ships a systemd unit that is enabled or active, it is the running kernel or
   one that apt keeps, or an installed package depends on it, directly or through another
   package in use. A package that depends on one in use belongs to the same software and is in
-  use too, like `mariadb-server-compat` next to `mariadb-server`.
+  use too, like `mariadb-server-compat` next to `mariadb-server`. In an alternative
+  (`media-types | mime-support`) a member counts only when no other member is installed with a
+  source, by name or as something such a package provides.
 - **Left over** (orange): nothing of the above. apt's simulated purge of all leftovers must
   remove nothing else; if it would, they all count as in use. "Now" is the limit: a program
   that only runs now and then, from cron or by hand, is not seen.
