@@ -47,6 +47,8 @@ STATE=/var/lib/login-warnings
 PROC=/proc
 INFO=/var/lib/dpkg/info
 UCF_REGISTRY=/var/lib/ucf/registry
+# The root whose /bin, /lib ... tell whether /usr is merged.
+ROOT=
 
 usage()
 {
@@ -473,14 +475,90 @@ fi
 count_in_use=$(printf '%s' "$in_use" | grep -c .)
 count_leftover=$(printf '%s' "$leftover" | grep -c .)
 
+# On a merged /usr, /bin, /sbin, /lib, /lib32, /lib64 and /libx32 are links into /usr, and dpkg
+# answers only for the spelling a package recorded: on Debian 13, dpkg -S /lib/modules/<v>
+# finds nothing, dpkg -S /usr/lib/modules/<v> names the kernel. A path below one of these links
+# is therefore asked in both spellings. Where the directories are real, the other spelling is
+# another file, and only the path as written counts.
+merged=""
+for md in bin sbin lib lib32 lib64 libx32
+do
+    if [ -L "$ROOT/$md" ] && [ "$(realpath -- "$ROOT/$md" 2>/dev/null)" = "$(realpath -m -- "$ROOT/usr/$md" 2>/dev/null)" ]
+    then
+        merged="$merged $md"
+    fi
+done
+
+# The other spelling of a path (or of a <beginning>* pattern) below a merged directory, or
+# nothing.
+usr_alias()
+{
+    for md in $merged
+    do
+        case $1 in
+            /"$md"/*) printf '%s\n' "/usr$1"; return 0 ;;
+            /usr/"$md"/*) printf '%s\n' "${1#/usr}"; return 0 ;;
+        esac
+    done
+}
+
 # The installed packages that own a path, apart from the given package; dpkg -S names them as
 # "<package>[, <package>...]: <path>", and diversions as "diversion by ...".
 owners()
 {
-    dpkg -S "$1" 2>/dev/null | grep -v '^diversion ' | sed 's|: /.*$||' | tr ',' '\n' \
+    { dpkg -S "$1" 2>/dev/null
+      ow_alias=$(usr_alias "$1")
+      [ -z "$ow_alias" ] || dpkg -S "$ow_alias" 2>/dev/null; } \
+        | grep -v '^diversion ' | sed 's|: /.*$||' | tr ',' '\n' \
         | sed 's/^ *//; s/:.*//' | grep -vxF -- "$2" | grep -xF -f /dev/fd/3 3<<EOF
 $installed_names
 EOF
+}
+
+# A maintainer script with the variables it sets once, unindented and to a fixed value, put in:
+# the kernel's postrm sets version=6.12.117+deb13-amd64 and deletes
+# /lib/modules/$version/..., its own directory. Without the value that path would stand for
+# everything below /lib/modules/, the modules of every installed kernel among them. A variable
+# that is set again anywhere, or by a for loop or read, keeps its name.
+put_literals()
+{
+    awk '
+        function put(l, t, v,    out, p, c)
+        {
+            out = ""
+            while ((p = index(l, t)) > 0) {
+                c = substr(l, p + length(t), 1)
+                if (substr(t, 2, 1) != "{" && c ~ /[A-Za-z0-9_]/) {
+                    out = out substr(l, 1, p + length(t) - 1)
+                } else {
+                    out = out substr(l, 1, p - 1) v
+                }
+                l = substr(l, p + length(t))
+            }
+            return out l
+        }
+        { line[NR] = $0 }
+        /^[A-Za-z_][A-Za-z0-9_]*=/ {
+            n = $0; sub(/=.*/, "", n)
+            v = $0; sub(/^[^=]*=/, "", v)
+            if (v ~ /^"[^"]*"$/ || v ~ /^\047[^\047]*\047$/) v = substr(v, 2, length(v) - 2)
+            if (v ~ /^[A-Za-z0-9._+~:\/@%,-]+$/) val[n] = v
+        }
+        END {
+            for (n in val) {
+                c = 0
+                for (i = 1; i <= NR; i++) {
+                    if (line[i] ~ ("(^|[^A-Za-z0-9_])" n "=")) c++
+                    if (line[i] ~ /(^|[ \t;&|(])(for|read)[ \t]/ && line[i] ~ ("[ \t]" n "([ \t;]|$)")) c += 2
+                }
+                if (c != 1) delete val[n]
+            }
+            for (i = 1; i <= NR; i++) {
+                l = line[i]
+                for (n in val) { l = put(l, "${" n "}", val[n]); l = put(l, "$" n, val[n]) }
+                print l
+            }
+        }'
 }
 
 # Removed packages whose config files are left (dpkg state rc). Purging one runs its postrm with
@@ -551,8 +629,10 @@ do
         # packages delete only their own links in nginx-common's modules-enabled. Such a path
         # becomes a pattern, <beginning>*, which dpkg -S matches against the files packages own;
         # in the ucf registry it matches every file that starts with the beginning. Read line by
-        # line, so that the shell does not expand the pattern against the disk.
-        paths=$(grep -oE "(rm( +-[A-Za-z]+)*|ucf +--purge|ucfr +--purge +[^ ]+) +[\"']?/[^ ;|&\$*?\"'\`]+[\$*?]?" "$postrm" \
+        # line, so that the shell does not expand the pattern against the disk. Variables set once
+        # to a fixed value are put in first (put_literals).
+        paths=$(put_literals < "$postrm" \
+            | grep -oE "(rm( +-[A-Za-z]+)*|ucf +--purge|ucfr +--purge +[^ ]+) +[\"']?/[^ ;|&\$*?\"'\`]+[\$*?]?" \
             | awk '{ print $NF }' | sed "s/^[\"']//" | sort -u)
         while IFS= read -r f
         do

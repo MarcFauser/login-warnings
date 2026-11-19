@@ -622,3 +622,35 @@ link next to a plain file nobody owns); three copies with one of the fixes taken
 exactly there, and two copies of 5.0.2/5.0.3 rules no longer matched the code and were
 rewritten for it. On the server, from a temporary copy, all 71 were left over and
 `pgdg-keyring` must stay, next to `grub-pc`.
+
+## 2026-11-19 - 5.0.5: two spellings of one file, and the kernel's own version
+
+On the same server a folder below `/lib/modules` was nearly taken for one that belongs to no
+package: `dpkg -S /lib/modules/6.12.116+deb13-amd64` said "no path found". It belongs to the
+installed fallback kernel, which dpkg recorded as `/usr/lib/modules/...`. On a merged `/usr`,
+`/lib` is a link to `usr/lib`, and dpkg answers only for the spelling a package recorded. The
+rules for removed packages asked dpkg about paths as the `postrm` spells them, so a `postrm`
+that deletes `/lib/...` of a file an installed package recorded as `/usr/lib/...` would have
+been listed as one that can go. Seen on no server; found by reading the code after that slip.
+
+Paths below `/bin`, `/sbin`, `/lib`, `/lib32`, `/lib64` and `/libx32` are now asked in both
+spellings, and only where those are links into `/usr`: where they are real directories, the
+other spelling is another file. The links are looked up below `ROOT`, empty on a server, so
+that the tests can build both kinds of system.
+
+The obvious way of doing it would have kept every removed kernel. Debian's kernel `postrm`
+deletes `/lib/modules/$version/.fresh-install` and `/lib/modules/$version/$extra_file`; since
+5.0.3 such a path stands for everything below `/lib/modules/`, and in the other spelling that
+holds the modules of each installed kernel (5,179 files each, measured on the server). Removed
+kernels could go before only because the spellings differed. The script sets
+`version=6.12.117+deb13-amd64` once, at the top, so a variable that a `postrm` sets once,
+unindented and to a fixed value, is now put in before its paths are read, and the path becomes
+the kernel's own module directory. A variable set again, or by a `for` loop or `read`, keeps its
+name and stays a pattern: its value is not known.
+
+Tested with two fake cases on the same removed packages, merged and not merged: a kernel with
+the lines of a real `postrm`, a library and a plugin directory in the other spelling, and two
+packages that set a variable twice or read it. Six copies with one of the rules taken out
+failed there. On the server, from a temporary copy, `grub-pc` and `pgdg-keyring` still must
+stay; the new functions, run there on the real kernel `postrm` with a version that is not
+installed, found no owner with the value put in, and both installed kernels without it.

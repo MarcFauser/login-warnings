@@ -162,6 +162,16 @@ proof: the check reads the `postrm`, it does not run it. Nor can it see a `postr
 data no package owns, such as a database or a data directory: for a package of software that
 keeps data, read the script before purging it.
 
+Paths are read the way dpkg knows them. On a merged `/usr` (`/lib` is a link to `usr/lib`,
+likewise `/bin`, `/sbin`, `/lib32`, `/lib64`, `/libx32`), dpkg finds a file only under the
+name its package recorded: a Debian 13 kernel's modules are `/usr/lib/modules/...`, while its
+`postrm` deletes `/lib/modules/$version/...`. So a path below these links is looked up in both
+spellings, and only where they are links. A variable that the `postrm` sets once, unindented
+and to a fixed value, is put in first: the kernel's `version=6.12.117+deb13-amd64` makes the
+path its own module directory instead of everything below `/lib/modules/`, where the modules of
+every installed kernel are. A variable set again, or by a `for` loop or `read`, stays a
+pattern.
+
 Should a conffile ever be in the way, the package can still be purged and the file brought
 back by its owner: `apt install --reinstall -o Dpkg::Options::=--force-confmiss <owner>`
 installs config files that are missing. Local changes to the file are lost that way, so keep a

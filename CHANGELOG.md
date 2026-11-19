@@ -4,6 +4,21 @@ All notable changes to this project are documented in this file.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project
 uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [5.0.5] - 2026-11-19
+
+### Fixed
+
+- `apt-updates` asked dpkg about a path only as a removed package's `postrm` spells it. On a
+  merged `/usr`, dpkg knows a file only under the name its package recorded, so a `postrm`
+  that deletes `/lib/...` of a file an installed package recorded as `/usr/lib/...` could be
+  listed as one whose config files can go. Paths below `/bin`, `/sbin`, `/lib`, `/lib32`,
+  `/lib64` and `/libx32` are now asked in both spellings, where these are links into `/usr`.
+- A variable that a `postrm` sets once, unindented and to a fixed value, is now put in before
+  its paths are read. A kernel's `postrm` deletes `/lib/modules/$version/...`, its own module
+  directory; read up to the variable it stood for everything below `/lib/modules/`, where the
+  installed kernels keep their modules, and with both spellings every removed kernel would
+  have had to stay. A variable set again, or by a `for` loop or `read`, stays a pattern.
+
 ## [5.0.4] - 2026-11-18
 
 ### Fixed
