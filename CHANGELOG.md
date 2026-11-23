@@ -4,6 +4,22 @@ All notable changes to this project are documented in this file.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project
 uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [5.1.0] - 2026-11-23
+
+### Added
+
+- `apt-updates` names the packages that `apt autoremove` would remove, in orange, with an
+  `apt remove` command for exactly those. Most of them still have a source and were reported
+  nowhere: on a Proxmox VE host apt offered to autoremove an old kernel that the repository
+  still has, while the section said "none". Packages without a source are listed once, as in
+  use or left over. They are removed, not purged, so that the next check judges the config files
+  they leave like those of any removed package. A failed simulation is a failed check.
+
+### Changed
+
+- The README says that the rules for removed packages read only shell commands in a `postrm`;
+  a Proxmox VE kernel's Perl `postrm` shows them nothing.
+
 ## [5.0.5] - 2026-11-19
 
 ### Fixed

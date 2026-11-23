@@ -27,7 +27,8 @@
 # that only /var/lib/dpkg/status knows has no source. It tells the ones in use (red: they run
 # and get no updates) from the ones left over from an older release (orange), names the
 # config files of removed packages that can go and those that must stay, and prints the
-# "apt purge" command for exactly what can go, never a pattern like '?obsolete'.
+# "apt purge" command for exactly what can go, never a pattern like '?obsolete'. Packages that
+# apt autoremove would remove are named with an "apt remove" command for exactly those.
 #
 # Runs after every boot, dpkg run and apt update (login-warnings). Run it by hand at any
 # time, as root.
@@ -197,6 +198,16 @@ if [ "$sim_status" -ne 0 ]
 then
     check_failed "apt-get could not simulate the upgrade:" "$sim" "$sim_status" \
         "apt-get -s dist-upgrade failed."
+fi
+
+# What "apt autoremove" would remove, simulated the same way.
+autoremove_status=0
+autoremove_sim=$(LC_ALL=C timeout 60 apt-get -s -o Debug::NoLocking=1 -o Dir::Cache::pkgcache= \
+    -o Dir::Cache::srcpkgcache= autoremove 2>&1) || autoremove_status=$?
+if [ "$autoremove_status" -ne 0 ]
+then
+    check_failed "apt-get could not simulate apt autoremove:" "$autoremove_sim" "$autoremove_status" \
+        "apt-get -s autoremove failed."
 fi
 
 # The installed packages, and every version apt knows of them with the files it comes from.
@@ -475,6 +486,21 @@ fi
 count_in_use=$(printf '%s' "$in_use" | grep -c .)
 count_leftover=$(printf '%s' "$leftover" | grep -c .)
 
+# Packages that apt no longer needs: installed automatically, needed by nothing installed and
+# not kept by APT::NeverAutoRemove. An old kernel that a newer one replaced is the common case,
+# and when the repository still offers it, nothing above names it: Proxmox keeps the running
+# kernel and the newest of each series, and its repository offers the older ones as well.
+# Those without a source are listed above already. They are removed with "apt remove", not
+# purged: the config files a removal leaves are checked by the rules for removed packages below
+# on the next run, before anything offers to purge them.
+not_needed=$(printf '%s\n' "$autoremove_sim" | awk '/^Remv / { print $2 }' | LC_ALL=C sort -u \
+    | awk 'NR == FNR { if ($0 != "") listed[$0] = 1; next }
+        { n = $0; sub(/:.*/, "", n); if (!(n in listed)) print }' /dev/fd/3 - 3<<EOF
+$(printf '%s\n' $no_source | sed 's/:.*//')
+EOF
+)
+count_not_needed=$(printf '%s' "$not_needed" | grep -c .)
+
 # On a merged /usr, /bin, /sbin, /lib, /lib32, /lib64 and /libx32 are links into /usr, and dpkg
 # answers only for the spelling a package recorded: on Debian 13, dpkg -S /lib/modules/<v>
 # finds nothing, dpkg -S /usr/lib/modules/<v> names the kernel. A path below one of these links
@@ -747,13 +773,14 @@ then
 fi
 
 # Red for security updates and for packages in use that no source offers (they never get a
-# security update, so they count like one), orange for other updates, for leftovers and config
-# files that can go, and for a problem with the lists; green when there is nothing to do.
-# Config files that must stay are listed and change nothing.
+# security update, so they count like one), orange for other updates, for leftovers, packages
+# apt no longer needs and config files that can go, and for a problem with the lists; green
+# when there is nothing to do. Config files that must stay are listed and change nothing.
 if [ "$count_security" -gt 0 ] || [ "$count_in_use" -gt 0 ]
 then
     colour=$red
-elif [ "$count" -gt 0 ] || [ -n "$problem" ] || [ "$count_leftover" -gt 0 ] || [ "$count_rc_go" -gt 0 ]
+elif [ "$count" -gt 0 ] || [ -n "$problem" ] || [ "$count_leftover" -gt 0 ] || [ "$count_rc_go" -gt 0 ] \
+    || [ "$count_not_needed" -gt 0 ]
 then
     colour=$orange
 else
@@ -771,12 +798,13 @@ packages()
     fi
 }
 
-# The words on stdin as an "apt purge" command, split with backslashes so that every line
-# stays below 80 columns and the lines can be copied in one piece.
-purge_command()
+# The words on stdin as an "apt <verb>" command ($1 the indentation, $2 purge or remove), split
+# with backslashes so that every line stays below 80 columns and the lines can be copied in one
+# piece.
+apt_command()
 {
-    tr ' ' '\n' | grep . | awk -v ind="$1" '
-        BEGIN { line = ind "apt purge" }
+    tr ' ' '\n' | grep . | awk -v ind="$1" -v verb="$2" '
+        BEGIN { line = ind "apt " verb }
         { if (length(line) + 1 + length($0) > 73) { print line " \\"; line = ind "  " $0 }
           else line = line " " $0 }
         END { print line }'
@@ -824,6 +852,11 @@ purge_command()
         printf '%s\n' "left over, without a source and not in use now: $(packages "$count_leftover")" | wrap '  '
         printf '%s\n' "$(printf '%s\n' "$leftover" | tr '\n' ' ')" | wrap '    '
     fi
+    if [ "$count_not_needed" -gt 0 ]
+    then
+        printf '%s\n' "no longer needed, apt autoremove would remove them: $(packages "$count_not_needed")" | wrap '  '
+        printf '%s\n' "$(printf '%s\n' "$not_needed" | tr '\n' ' ')" | wrap '    '
+    fi
     if [ "$count_rc_go" -gt 0 ]
     then
         printf '%s\n' "config files of removed packages that can go: $(packages "$count_rc_go")" | wrap '  '
@@ -840,7 +873,12 @@ purge_command()
     if [ "$count_leftover" -gt 0 ] || [ "$count_rc_go" -gt 0 ]
     then
         echo "  remove what can go (apt lists it and asks first):"
-        printf '%s\n' $leftover $rc_go | purge_command '    '
+        printf '%s\n' $leftover $rc_go | apt_command '    ' purge
+    fi
+    if [ "$count_not_needed" -gt 0 ]
+    then
+        echo "  remove what apt no longer needs (apt lists it and asks first):"
+        printf '%s\n' $not_needed | apt_command '    ' remove
     fi
     printf '%s%s\n' "$footer" "$reset"
 } | publish "$FILE"

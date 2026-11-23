@@ -654,3 +654,33 @@ packages that set a variable twice or read it. Six copies with one of the rules 
 failed there. On the server, from a temporary copy, `grub-pc` and `pgdg-keyring` still must
 stay; the new functions, run there on the real kernel `postrm` with a version that is not
 installed, found no owner with the value put in, and both installed kernels without it.
+
+## 2026-11-23 - 5.1.0: what apt autoremove would remove
+
+On a Proxmox VE host apt said that a package was "automatically installed and is no longer
+required", an older kernel of the 7.0 series, while the login section said "Package updates:
+none". Nothing was wrong with the rules; the kernel was simply outside them. The check reports
+packages without a source and removed packages with config files, and this kernel still had a
+source: the Proxmox repository keeps the older kernels. Proxmox's own `APT::NeverAutoRemove`
+lines keep the running kernel and the newest of each series, so apt would autoremove it. The
+README even said that on Proxmox an old kernel shows up only once the repository stops offering
+it.
+
+The check now runs `apt-get -s autoremove` next to the upgrade simulation, without locking, and
+names what apt would remove. A package without a source that apt would autoremove too stays
+where it was, in use or left over, so nothing is listed twice. The command is `apt remove`, not
+`apt purge`: purging runs the `postrm`, which the rules for removed packages exist to check,
+and a removal leaves the package's config files for exactly that check on the next run. That is
+two steps for a kernel, and each of them is checked.
+
+On the same host, the kernel's `postrm` turned out to be Perl: `unlink` and `glob` instead of
+`rm`. The rules read shell commands only, so such a script shows them nothing; for this kernel
+it deletes only its own initrd and module index files, read by hand. The README says so now.
+
+A kernel installed by hand is not covered: apt never autoremoves it, so it stays until it is
+removed by name. The same host had one.
+
+Tested with three fake cases: the lines apt printed on the host, a package that is also left
+over without a source (with an architecture suffix on one name), and a failed simulation. Four
+copies with one part taken out failed there. On the host, from a temporary copy, the section
+named the kernel and the command, with the real result file untouched.

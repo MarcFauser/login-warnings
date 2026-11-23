@@ -33,7 +33,7 @@ Three checks so far:
 
 | Check | Reports |
 | --- | --- |
-| `apt-updates` | Package updates offered by the package lists, by name, security updates separately, how old the lists are, installed packages that no package source offers any more (in use, or left over from an older release), config files of removed packages that can go or must stay, and the `apt purge` command for exactly what can go. |
+| `apt-updates` | Package updates offered by the package lists, by name, security updates separately, how old the lists are, installed packages that no package source offers any more (in use, or left over from an older release), config files of removed packages that can go or must stay, and the `apt purge` command for exactly what can go; packages `apt autoremove` would remove, with an `apt remove` command for exactly those. |
 | `pg-collation` | PostgreSQL databases whose collation version no longer matches glibc, with a fix script. Covers the Debian/PGDG clusters and the PostgreSQL bundled with the GitLab Linux package. |
 | `ssh-password` | Whether the SSH server accepts password logins, where the setting comes from, and how to allow keys only. |
 
@@ -158,9 +158,11 @@ needs. A package with config files left must stay when its purge would
 The others can go. The first three were seen on real servers; the last is a precaution and has
 not been seen: when a conffile moves to another package, dpkg normally takes it off the old
 package's list (as with `/etc/magic` from `libmagic1` to `libmagic1t64`). None of this is a
-proof: the check reads the `postrm`, it does not run it. Nor can it see a `postrm` that deletes
-data no package owns, such as a database or a data directory: for a package of software that
-keeps data, read the script before purging it.
+proof: the check reads the `postrm`, it does not run it, and it reads the shell commands `rm`,
+`ucf` and `deb-systemd-helper`: a `postrm` in another language, like the Perl script of a Proxmox
+VE kernel, shows it nothing. Nor can it see a `postrm` that deletes data no package owns, such
+as a database or a data directory: for a package of software that keeps data, read the script
+before purging it.
 
 Paths are read the way dpkg knows them. On a merged `/usr` (`/lib` is a link to `usr/lib`,
 likewise `/bin`, `/sbin`, `/lib32`, `/lib64`, `/libx32`), dpkg finds a file only under the
@@ -185,6 +187,16 @@ take packages in use and config files that must stay along. It has no `-y`: apt 
 would remove and asks first. Long commands are split with backslashes so that they can be
 copied in one piece.
 
+### Packages apt no longer needs
+
+The check also simulates `apt autoremove` and names what it would remove: packages installed
+automatically that nothing installed needs any more and that `APT::NeverAutoRemove` does not
+keep. Most of them still have a source and show up nowhere else, an old kernel above all. Those
+without a source are listed once, as in use or left over. The section ends with an `apt remove`
+command for exactly these packages, not `apt purge`: a removal leaves their config files, and
+the next check names those as config files of removed packages and says whether they can go or
+must stay, as for any other removed package.
+
 ### Kernels
 
 Old kernels show up as left over once their version has left the archive, and the command
@@ -194,7 +206,9 @@ the check applies the same rule. The newest kernel is reported as in use when no
 it, because then the kernel gets no updates. Proxmox VE kernels (`proxmox-kernel-*`) are not kernels to apt:
 Proxmox keeps them through `APT::NeverAutoRemove`, which the check does not read, so one would
 be reported if the Proxmox repository stopped offering it. On a Proxmox VE 9 host checked on
-2026-11-16 the repository offered every installed kernel and all older versions.
+2026-11-16 the repository offered every installed kernel and all older versions. An old kernel
+that apt would autoremove and that still has a source appears under packages apt no longer
+needs. A kernel installed by hand is never one of them: apt keeps it until it is removed by name.
 
 | State | Section |
 | --- | --- |
@@ -206,6 +220,7 @@ be reported if the Proxmox repository stopped offering it. On a Proxmox VE 9 hos
 | no apt update since installation | an extra line asking for `apt update` (orange) |
 | installed packages in use that no package source offers | an extra line naming them and `show: apt-cache policy <package>` (red, as they get no security updates) |
 | packages left over without a source | `left over, without a source and not in use now:` and their names (orange) |
+| packages apt no longer needs | `no longer needed, apt autoremove would remove them:`, their names, and the `apt remove` command for exactly those (orange) |
 | config files of removed packages that can go | `config files of removed packages that can go:` and their names (orange) |
 | config files that must stay | `config files of removed packages that must stay:`, each with the reason (no change of colour) |
 | something can go | `remove what can go`, then the `apt purge` command for exactly those packages |
