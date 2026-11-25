@@ -8,16 +8,19 @@
 #   /usr/local/sbin/pg-collation-check           writes /run/login-warnings/pg-collation
 #   /usr/local/sbin/pg-collation-fix             rebuilds indexes, refreshes the collation version
 #   /usr/local/sbin/restart-check                writes /run/login-warnings/restart
+#   /usr/local/sbin/zvol-links-check             writes /run/login-warnings/zvol-links; --repair at boot
 #   /etc/systemd/system/login-warnings.service   runs the checks after every boot
+#   /etc/systemd/system/login-warnings-zvol-repair.service
+#                                                repairs missing zvol links at boot (where ZFS is installed)
 #   /etc/dpkg/dpkg.cfg.d/login-warnings          runs the checks after every dpkg run
 #   /etc/apt/apt.conf.d/80login-warnings         refreshes the package lists daily, runs the checks after every apt update
 #   /etc/profile.d/login-warnings.sh             shows the results in every interactive login shell
 #   /etc/login-warnings.d/<check>                one file per enabled check (<check>.off: switched off)
 #   /var/lib/login-warnings                      when the last apt update started and reached a repository, whether one is unfinished
 #
-# Registers apt-updates and restart, ssh-password if an SSH server (sshd) is installed, and
+# Registers apt-updates and restart, ssh-password if an SSH server (sshd) is installed,
 # pg-collation if PostgreSQL is installed locally (Debian/PGDG packages, or the PostgreSQL
-# bundled with the GitLab Linux package). A check that was
+# bundled with the GitLab Linux package), and zvol-links where ZFS has volumes. A check that was
 # switched off (login-warnings disable) stays off. Run as root from the unpacked release
 # archive (/usr/local/src/login-warnings) or a checkout of this repository. Safe to run again;
 # existing files are overwritten, which is also how updates are applied (login-warnings update
@@ -33,7 +36,7 @@ then
 fi
 
 for file in login-warnings apt-updates-check ssh-password-check pg-collation-check pg-collation-fix \
-    restart-check login-warnings.service dpkg-login-warnings.cfg apt-login-warnings.conf login-warnings.sh
+    restart-check zvol-links-check login-warnings.service login-warnings-zvol-repair.service dpkg-login-warnings.cfg apt-login-warnings.conf login-warnings.sh
 do
     if [ ! -f "$src/$file" ]
     then
@@ -86,7 +89,9 @@ install -m 0755 -o root -g root "$src/ssh-password-check" /usr/local/sbin/ssh-pa
 install -m 0755 -o root -g root "$src/pg-collation-check" /usr/local/sbin/pg-collation-check
 install -m 0755 -o root -g root "$src/pg-collation-fix" /usr/local/sbin/pg-collation-fix
 install -m 0755 -o root -g root "$src/restart-check" /usr/local/sbin/restart-check
+install -m 0755 -o root -g root "$src/zvol-links-check" /usr/local/sbin/zvol-links-check
 install -m 0644 -o root -g root "$src/login-warnings.service" /etc/systemd/system/login-warnings.service
+install -m 0644 -o root -g root "$src/login-warnings-zvol-repair.service" /etc/systemd/system/login-warnings-zvol-repair.service
 install -m 0644 -o root -g root "$src/dpkg-login-warnings.cfg" /etc/dpkg/dpkg.cfg.d/login-warnings
 install -m 0644 -o root -g root "$src/apt-login-warnings.conf" /etc/apt/apt.conf.d/80login-warnings
 install -m 0644 -o root -g root "$src/login-warnings.sh" /etc/profile.d/login-warnings.sh
@@ -154,9 +159,30 @@ else
     echo "  pg-collation: not registered, no local PostgreSQL (no user postgres with psql,"
     echo "    no PostgreSQL of the GitLab Linux package)"
 fi
+zfs=0
+zvol_names=""
+if command -v zfs >/dev/null 2>&1
+then
+    zfs=1
+    # Caught whole, not piped into head: under pipefail, head could end the pipe with SIGPIPE.
+    zvol_names=$(zfs list -H -t volume -o name 2>/dev/null || true)
+fi
+if [ -n "$zvol_names" ]
+then
+    register zvol-links
+else
+    echo "  zvol-links: not registered, no ZFS volumes (zfs list -t volume)"
+fi
 
 systemctl daemon-reload
 systemctl enable --quiet login-warnings.service
+# The repair runs only where the check is switched on (its unit has a condition on the check's
+# file), so it is enabled wherever ZFS is installed: switching the check on later needs nothing
+# else.
+if [ "$zfs" -eq 1 ]
+then
+    systemctl enable --quiet login-warnings-zvol-repair.service
+fi
 
 echo
 echo "Installed $(/usr/local/sbin/login-warnings --version):"
@@ -166,7 +192,14 @@ echo "  /usr/local/sbin/ssh-password-check"
 echo "  /usr/local/sbin/pg-collation-check"
 echo "  /usr/local/sbin/pg-collation-fix"
 echo "  /usr/local/sbin/restart-check"
+echo "  /usr/local/sbin/zvol-links-check"
 echo "  /etc/systemd/system/login-warnings.service (enabled)"
+if [ "$zfs" -eq 1 ]
+then
+    echo "  /etc/systemd/system/login-warnings-zvol-repair.service (enabled)"
+else
+    echo "  /etc/systemd/system/login-warnings-zvol-repair.service (not enabled, no ZFS)"
+fi
 echo "  /etc/dpkg/dpkg.cfg.d/login-warnings"
 echo "  /etc/apt/apt.conf.d/80login-warnings"
 echo "  /etc/profile.d/login-warnings.sh"

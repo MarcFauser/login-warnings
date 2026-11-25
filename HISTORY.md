@@ -768,3 +768,45 @@ one only by the soname pattern, a package whose security update waits uninstalle
 a container's file from a security update (not red either). Seven new copies with one part taken
 out failed there, the seventeen in all. On the host, from a temporary copy, 896 ms; on the
 container, still green.
+
+## 2026-11-25 - 7.0.0: a VM disk without its link
+
+The same evening a VM on the Proxmox VE host did not start after a reboot: "no zvol device link
+for 'vm-114-disk-2' found after 300 sec". udev had failed on the zd device of that volume at boot
+("Failed to process device, ignoring: Unknown error 512"), and nothing tried again.
+`udevadm trigger --action=add` on the device brought the link back, and the VM started without a
+reboot of the host. The journal showed the same udev message in 3 of 99 boots, under kernels 6.14
+and 7.0. The user wanted to see it at an SSH login when this happens.
+
+Read on the host before anything was built: `zfs-volume-wait.service` (`zvol_wait`, OpenZFS
+2.4.4) only waits; Proxmox VE's `zfs_wait_for_zvol_link` (`ZFSPoolPlugin.pm`, libpve-storage-perl
+9.1.26) looks for a block device behind the link for 300 seconds in a worker and never re-triggers
+udev; and `pve-guests.service` is ordered after nothing of ZFS, so the guests started while
+`zvol_wait` was still waiting. So the check takes `zvol_wait`'s rule for which volumes need a link
+(volmode, redaction, key status, partial receive), counts a link the way Proxmox VE does (a block
+device behind it), and finds the zd device of a volume with `zvol_id`, as the udev rule does.
+
+The repair is a oneshot unit after `zfs-import.target` and before `pve-guests.service`. It
+re-triggers only what udev would have handled: a volume whose zd device exists, once udev is idle,
+at most three times. A volume without a zd device waits for ZFS, not for udev, and waiting is all
+that helps there. 60 seconds is its limit, because every second of it delays the guests. Its
+record in `/var/lib` survives the reboot, so the next boots still say that a repair was needed;
+the record of the current boot lives in `/run`.
+
+Two faults turned up before the release. The fakes showed that at its deadline the repair forgot
+that udev had been idle and reported it as still busy. The test on the host, which ran the repair
+by hand, showed that such a run would appear at the next login as a repair at boot. Now only the
+unit's run (`--trigger boot`) records anything, and a fake case covers a repair by hand.
+
+Tested with nineteen fake cases (every state of the section, the repair with and without a zd
+device, a trigger that does not help, udev that stays busy, a dry run, the next boot, a repair by
+hand) and sixteen copies with one rule taken out each, every one failing there. On the host, from
+a temporary copy that wrote into a temporary folder: OK with 49 volumes, and a dry run of the
+repair in 149 ms. Then the failure on purpose: a 4 MB test volume, whose link was deleted by hand
+while its zd device stayed. The check reported it as missing with the trigger command, the repair
+brought the link back in 1.3 seconds, and the check then showed the repair. The test volume was
+destroyed afterwards, and the 49 volumes had their 49 links again. `systemd-analyze verify` found
+nothing to complain about in the unit. Its place in the boot order shows only in a real reboot,
+which has not happened yet.
+
+Version 7.0.0, because a new check is a new function.

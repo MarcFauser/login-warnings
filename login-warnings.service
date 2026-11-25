@@ -4,9 +4,11 @@ Documentation=https://github.com/MarcFauser/login-warnings
 # pg-collation queries the PostgreSQL clusters; postgresql.service waits for all of them (each
 # postgresql@.service is Before= it). gitlab-runsvdir.service starts GitLab's bundled
 # PostgreSQL; the check waits for it to answer. ssh-password connects to sshd, which listens
-# either itself (ssh.service) or through socket activation (ssh.socket). Without these units
-# the ordering has no effect.
+# either itself (ssh.service) or through socket activation (ssh.socket). zvol-links reports
+# what login-warnings-zvol-repair.service did in this boot. Without these units the ordering
+# has no effect.
 After=postgresql.service gitlab-runsvdir.service ssh.service ssh.socket
+After=login-warnings-zvol-repair.service
 
 [Service]
 Type=oneshot

@@ -29,7 +29,7 @@ SSH password login: OFF
 
 Every line stays below 80 columns, so nothing wraps in a normal terminal window.
 
-Four checks so far:
+Five checks so far:
 
 | Check | Reports |
 | --- | --- |
@@ -37,6 +37,7 @@ Four checks so far:
 | `pg-collation` | PostgreSQL databases whose collation version no longer matches glibc, with a fix script. Covers the Debian/PGDG clusters and the PostgreSQL bundled with the GitLab Linux package. |
 | `ssh-password` | Whether the SSH server accepts password logins, where the setting comes from, and how to allow keys only. |
 | `restart` | Programs that still use files an update has replaced, usually libraries: the services with a `systemctl try-restart` command for exactly those, systemd itself, logged-in users and Proxmox VE VMs; red when one of the files came with a security update. |
+| `zvol-links` | ZFS volumes that have no link in `/dev/zvol`, so that a Proxmox VE VM using one does not start, with the commands that bring the link back; what the repair at boot re-triggered. |
 
 ## How it works
 
@@ -44,7 +45,8 @@ Four checks so far:
 | --- | --- |
 | `/usr/local/sbin/login-warnings` | Runs every enabled check, shows the results, switches checks on and off, installs updates. |
 | `/etc/login-warnings.d/<check>` | One file per enabled check; its first line is the command that runs it. `<check>.off` is a check that is switched off. |
-| `/etc/systemd/system/login-warnings.service` | Runs every enabled check once after every boot, after PostgreSQL has started (and after `gitlab-runsvdir.service`, which starts GitLab's PostgreSQL) and after sshd listens (`ssh.service` or `ssh.socket`). |
+| `/etc/systemd/system/login-warnings.service` | Runs every enabled check once after every boot, after PostgreSQL has started (and after `gitlab-runsvdir.service`, which starts GitLab's PostgreSQL), after sshd listens (`ssh.service` or `ssh.socket`) and after the zvol link repair. |
+| `/etc/systemd/system/login-warnings-zvol-repair.service` | Re-triggers udev at boot for ZFS volumes without a link in `/dev/zvol`, before Proxmox VE starts its guests. Enabled where ZFS is installed; runs only while `zvol-links` is switched on. |
 | `/etc/dpkg/dpkg.cfg.d/login-warnings` | Runs every enabled check after every dpkg run (`post-invoke`). |
 | `/etc/apt/apt.conf.d/80login-warnings` | Refreshes the package lists once a day and runs every enabled check after every apt update. |
 | `/etc/profile.d/login-warnings.sh` | Runs `login-warnings show` in interactive login shells: in every terminal window, for every user, and never in scripts or file transfers. `show` puts the sections of all enabled checks into one frame. |
@@ -53,7 +55,8 @@ Four checks so far:
 | `/usr/local/sbin/pg-collation-check` | The `pg-collation` check; writes `/run/login-warnings/pg-collation`. |
 | `/usr/local/sbin/pg-collation-fix` | Runs `REINDEX DATABASE` on every affected database, then `ALTER DATABASE ... REFRESH COLLATION VERSION`. The version is only refreshed if the reindex succeeded. With `--gitlab` it works on GitLab's bundled PostgreSQL. |
 | `/usr/local/sbin/restart-check` | The `restart` check; writes `/run/login-warnings/restart`. |
-| `/var/lib/login-warnings` | When the last apt update started and when it last reached a repository, and a marker while an apt update has not reached one; the latest release and when it was checked. |
+| `/usr/local/sbin/zvol-links-check` | The `zvol-links` check; writes `/run/login-warnings/zvol-links`. With `--repair`, the repair the unit above runs at boot. |
+| `/var/lib/login-warnings` | When the last apt update started and when it last reached a repository, and a marker while an apt update has not reached one; the latest release and when it was checked; the last zvol link repair that did something (`zvol-links-repair`). |
 
 Nothing is ever silent: an empty login would look exactly like an all-clear. Every section
 names date, time and trigger of its check (at boot, after a package change, after apt update,
@@ -69,8 +72,8 @@ windows on the same connection.
 ## Choosing the checks
 
 `install.sh` switches on `apt-updates` and `restart`, `ssh-password` if an SSH server (`sshd`)
-is installed, and `pg-collation` if PostgreSQL is installed locally (from the Debian or PGDG packages, or
-bundled with the GitLab Linux package).
+is installed, `pg-collation` if PostgreSQL is installed locally (from the Debian or PGDG packages, or
+bundled with the GitLab Linux package), and `zvol-links` if ZFS has volumes (`zfs list -t volume`).
 A check you switch off stays off when you install an update.
 
 ```bash
@@ -81,7 +84,9 @@ login-warnings enable apt-updates
 
 `enable` runs the check at once and shows its result; `disable` removes its result, so the
 login stops showing it immediately. If PostgreSQL is installed later, `login-warnings enable
-pg-collation` switches its check on.
+pg-collation` switches its check on. Likewise `login-warnings enable zvol-links` for ZFS volumes
+created later; if ZFS itself came later, run `bash /usr/local/src/login-warnings/install.sh`
+again, which enables the repair at boot.
 
 Run every enabled check by hand and see the results, or a single check:
 
@@ -91,6 +96,7 @@ apt-updates-check
 pg-collation-check
 ssh-password-check
 restart-check
+zvol-links-check
 ```
 
 ## apt-updates: package updates
@@ -466,6 +472,54 @@ result is the state when the check last ran: after restarting something by hand,
 | only processes in containers do | `none`, with a line that counts them (green) |
 | no process could be read | `Restart needed: CHECK FAILED`, then the last successful result (orange); exit status 1 |
 
+## zvol-links: links of ZFS volumes
+
+ZFS turns every volume (zvol) into a block device `/dev/zd<N>`, and udev gives it a link
+`/dev/zvol/<pool>/<volume>` (`60-zvol.rules`, which names it with `zvol_id`). Proxmox VE opens a
+VM disk on ZFS through that link. When udev fails on a zd device at boot, it logs
+`zd640: Failed to process device, ignoring: Unknown error 512` and does not try again;
+`zfs-volume-wait.service` only waits, and Proxmox VE starts its guests without waiting for it.
+Proxmox VE then waits 300 seconds for the link and refuses to start the VM
+(`no zvol device link for 'vm-114-disk-2' found after 300 sec`). Triggering udev again for that
+device brings the link back, without a reboot. On one Proxmox VE 9 host the journal showed the
+udev message in 3 of 99 boots, under kernels 6.14 and 7.0.
+
+Which volumes should have a link follows `zvol_wait` (OpenZFS 2.4.4): not those with
+`volmode=none`, nor `volmode=default` while the module's `zvol_volmode` is 3, nor redacted
+volumes, volumes whose key is not loaded, or a partially received volume without a
+`<name>/%recv` clone. A link counts when it leads to a block device, as Proxmox VE checks it.
+
+### The repair at boot
+
+`login-warnings-zvol-repair.service` runs `zvol-links-check --repair --trigger boot` after the
+pools are imported (`zfs-import.target`) and before `pve-guests.service`. It waits until udev is
+idle (`udevadm settle`), re-triggers udev (`udevadm trigger --action=add /dev/zd<N>`) for every
+volume that has no link while its zd device exists, at most three times each, and checks again,
+for at most 60 seconds. A volume without a zd device is waited for, not triggered: ZFS has not
+created the device yet, so udev has nothing to process. What the repair did goes to the journal
+(`journalctl -u login-warnings-zvol-repair`), to a record of this boot in `/run/login-warnings`,
+and, when it re-triggered something or a link is still missing, to
+`/var/lib/login-warnings/zvol-links-repair`, which later boots show as the last repair. A link
+the repair cannot bring back is reported as missing, and the VM fails as before. The service
+runs only while the check is switched on.
+
+`zvol-links-check --repair --dry-run` says what the repair would do and changes nothing.
+`zvol-links-check --repair` by hand repairs the same way but records nothing, so that the
+section never calls it a repair at boot; run `zvol-links-check` afterwards.
+
+| State | Section |
+| --- | --- |
+| every volume has its link | `Zvol links: OK`, how many volumes, and whether the repair ran in this boot (green) |
+| the repair at boot re-triggered udev | `Zvol links: REPAIRED AT BOOT`, the volumes and their zd devices, when, and udev's message (orange) |
+| a volume has no link | `Zvol links: MISSING`, the volumes with zd device and VM, then `udevadm trigger --action=add /dev/zd<N> && udevadm settle` and `qm start <vmid>` for exactly those (red) |
+| udev failed on a partition of a zd device in this boot | an extra line naming it; Proxmox VE needs no partition links (orange) |
+| an earlier boot needed a repair | `last repair in an earlier boot:`, the time and the volumes (no change of colour) |
+| ZFS not loaded, or no volume that should have a link | `Zvol links: NOTHING CHECKED` (orange) |
+| `zfs list` fails | `Zvol links: CHECK FAILED` with zfs's message, then the last successful result (orange); exit status 1 |
+
+The section shows the state when the check last ran: at boot after the repair, after dpkg and apt
+update, and by hand. After bringing a link back by hand, run `zvol-links-check`.
+
 ## Requirements
 
 - Debian or a derivative with systemd, dpkg and apt
@@ -474,6 +528,7 @@ result is the state when the check last ran: after restarting something by hand,
   with the GitLab Linux package (see above)
 - for `ssh-password`: the OpenSSH server (`openssh-server`, which brings the `ssh` client the
   check uses)
+- for `zvol-links`: OpenZFS (`zfsutils-linux`, which brings the `zvol_id` the check uses)
 
 ## Installation
 
@@ -537,11 +592,12 @@ login-warnings --version
 ## Uninstall
 
 ```bash
-systemctl disable --now login-warnings.service
-rm -f /etc/systemd/system/login-warnings.service /etc/dpkg/dpkg.cfg.d/login-warnings \
-      /etc/apt/apt.conf.d/80login-warnings /etc/profile.d/login-warnings.sh \
-      /usr/local/sbin/login-warnings /usr/local/sbin/apt-updates-check \
-      /usr/local/sbin/ssh-password-check /usr/local/sbin/restart-check \
+systemctl disable --now login-warnings.service login-warnings-zvol-repair.service
+rm -f /etc/systemd/system/login-warnings.service /etc/systemd/system/login-warnings-zvol-repair.service \
+      /etc/dpkg/dpkg.cfg.d/login-warnings /etc/apt/apt.conf.d/80login-warnings \
+      /etc/profile.d/login-warnings.sh /usr/local/sbin/login-warnings \
+      /usr/local/sbin/apt-updates-check /usr/local/sbin/ssh-password-check \
+      /usr/local/sbin/restart-check /usr/local/sbin/zvol-links-check \
       /usr/local/sbin/pg-collation-check /usr/local/sbin/pg-collation-fix
 rm -rf /etc/login-warnings.d /run/login-warnings /var/lib/login-warnings /usr/local/src/login-warnings
 systemctl daemon-reload

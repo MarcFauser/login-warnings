@@ -1,0 +1,21 @@
+[Unit]
+Description=Login warnings: re-trigger udev for zvols without a /dev/zvol link
+Documentation=https://github.com/MarcFauser/login-warnings
+# udev sometimes fails on a zd device at boot and never retries; Proxmox VE then waits 300 s for
+# the link and refuses to start the VM. This runs after the pools are imported and before the
+# guests start (pve-guests.service is ordered after nothing of ZFS), bounded by the script to
+# 60 seconds. It runs only while the check is switched on (login-warnings disable zvol-links
+# switches both off).
+After=zfs-import.target systemd-udevd.service
+Before=pve-guests.service
+ConditionPathIsDirectory=/sys/module/zfs
+ConditionPathExists=/etc/login-warnings.d/zvol-links
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/zvol-links-check --repair --trigger boot
+# The script stops after 60 seconds; this is the hard limit if it hangs.
+TimeoutStartSec=90
+
+[Install]
+WantedBy=multi-user.target

@@ -4,6 +4,28 @@ All notable changes to this project are documented in this file.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project
 uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [7.0.0] - 2026-11-25
+
+### Added
+
+- A new check, `zvol-links` (`zvol-links-check`): ZFS volumes without a link in `/dev/zvol`.
+  udev creates these links at boot and sometimes fails on one ("Failed to process device,
+  ignoring: Unknown error 512") without trying again; Proxmox VE then waits 300 seconds and
+  refuses to start the VM. Red with `udevadm trigger` and `qm start` commands for exactly the
+  affected volumes; orange when the repair at boot brought links back, with the volumes and
+  udev's message; the last repair of an earlier boot stays listed. Which volumes need a link
+  follows `zvol_wait`'s rule.
+- `login-warnings-zvol-repair.service` repairs this at boot, before Proxmox VE starts its guests:
+  it waits until udev is idle, re-triggers udev for every volume whose zd device exists but has
+  no link (at most three times each, for at most 60 seconds), and records what it did in
+  `/var/lib/login-warnings/zvol-links-repair`. `install.sh` switches the check on where ZFS has
+  volumes and enables the unit wherever ZFS is installed; the unit runs only while the check is
+  switched on.
+
+### Changed
+
+- `login-warnings.service` runs after the repair, so that the section at boot shows it.
+
 ## [6.1.0] - 2026-11-25
 
 ### Added

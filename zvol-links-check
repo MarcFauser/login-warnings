@@ -1,0 +1,505 @@
+#!/bin/sh
+# zvol-links-check
+#
+# Reports ZFS volumes (zvols) that have no link in /dev/zvol, and repairs that at boot. Writes
+# the result to /run/login-warnings/zvol-links; login-warnings shows that file in every
+# interactive login shell, as one section of its display. The file always says when the check
+# ran: green "OK", an orange "REPAIRED AT BOOT" with what the repair did, a red "MISSING" with
+# the commands that bring a link back, or an orange "CHECK FAILED" followed by the last
+# successful result (kept in /run/login-warnings/.zvol-links.last).
+#
+# udev creates the link /dev/zvol/<pool>/<volume> for every zd device (60-zvol.rules). When udev
+# fails on one at boot ("zd640: Failed to process device, ignoring: Unknown error 512"), nothing
+# retries: zfs-volume-wait.service only waits, and Proxmox VE waits 300 seconds for the link and
+# then refuses to start the VM ("no zvol device link for 'vm-114-disk-2' found"). Re-triggering
+# udev for that device brings the link back.
+#
+# --repair, run at boot by login-warnings-zvol-repair.service before Proxmox VE starts its
+# guests, waits until udev is idle, re-triggers udev for every zvol that should have a link and
+# has none while its zd device exists, and checks again, for at most 60 seconds. A zvol whose zd
+# device does not exist yet is waited for, not triggered. What it did goes to the journal and,
+# with --trigger boot (the unit passes it), to /run/login-warnings/.zvol-links.boot for this
+# boot and, when it did something, to /var/lib/login-warnings/zvol-links-repair, which survives
+# reboots. Run by hand it records nothing, so that the section never calls a repair by hand one
+# at boot. --dry-run only says what --repair would do.
+#
+# Which zvols should have a link is zvol_wait's rule (zfsutils-linux 2.4.4, /usr/sbin/zvol_wait
+# lines 28-56): not volmode=none, not volmode=default while the module's zvol_volmode is 3, not
+# redacted, not with an unavailable key, and not a partially received volume without a
+# <name>/%recv clone. A link counts when it leads to a block device, as Proxmox VE checks it.
+#
+# Runs after every boot (after the repair), dpkg run and apt update (login-warnings). Run it by
+# hand at any time, as root.
+#
+# Usage: zvol-links-check [--quiet] [--trigger boot|dpkg|apt|manual]
+#        zvol-links-check --repair [--dry-run] [--trigger boot]
+PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+cd /
+
+DIR=/run/login-warnings
+FILE=$DIR/zvol-links
+# Hidden from the login display: the last successful result, and what the repair did in this
+# boot.
+LAST=$DIR/.zvol-links.last
+BOOT_RECORD=$DIR/.zvol-links.boot
+# The last repair that did something, kept across reboots.
+STATE=/var/lib/login-warnings
+RECORD=$STATE/zvol-links-repair
+# Read to find the zvols, their zd devices and this boot; redirected by the tests.
+DEV=/dev
+ZVOL_ID=/usr/lib/udev/zvol_id
+ZFS_MODULE=/sys/module/zfs
+BOOT_ID=/proc/sys/kernel/random/boot_id
+# How long the repair may take at boot, in seconds; pve-guests.service waits for it.
+REPAIR_SECONDS=60
+# The test for a usable link: a block device through it, as Proxmox VE's zfs_wait_for_zvol_link
+# checks it (-b).
+BLOCK=-b
+
+usage()
+{
+    echo "Usage: zvol-links-check [--quiet] [--trigger boot|dpkg|apt|manual]" >&2
+    echo "       zvol-links-check --repair [--dry-run] [--trigger boot]" >&2
+    exit 2
+}
+
+quiet=0
+trigger=manual
+mode=check
+dry_run=0
+while [ $# -gt 0 ]
+do
+    case $1 in
+        --quiet) quiet=1 ;;
+        --trigger) shift; trigger=${1:-} ;;
+        --repair) mode=repair ;;
+        --dry-run) dry_run=1 ;;
+        *) usage ;;
+    esac
+    shift
+done
+if [ "$dry_run" -eq 1 ] && [ "$mode" != repair ]
+then
+    usage
+fi
+
+case $trigger in
+    boot) checked_by="at boot" ;;
+    dpkg) checked_by="after a package change" ;;
+    apt) checked_by="after apt update" ;;
+    manual) checked_by="by hand" ;;
+    *) usage ;;
+esac
+
+if [ "$(id -u)" -ne 0 ]
+then
+    echo "Please run as root." >&2
+    exit 1
+fi
+
+mkdir -p -m 0755 "$DIR"
+now_text()
+{
+    date '+%Y-%m-%d %H:%M:%S %:z'
+}
+checked_at=$(now_text)
+boot_id=$(cat "$BOOT_ID" 2>/dev/null)
+
+# The zvols that should have a link, one name per line: zvol_wait's rule (see above). Fails with
+# zfs's message when zfs list fails.
+expected_zvols()
+{
+    default_volmode=""
+    if [ -r "$ZFS_MODULE/parameters/zvol_volmode" ]
+    then
+        read -r default_volmode < "$ZFS_MODULE/parameters/zvol_volmode"
+    fi
+    if ! volumes=$(zfs list -t volume -H -o name,volmode,receive_resume_token,redact_snaps,keystatus 2>&1)
+    then
+        printf '%s\n' "$volumes"
+        return 1
+    fi
+    printf '%s\n' "$volumes" | while IFS="	" read -r name volmode token redacted keystatus
+    do
+        [ -n "$name" ] || continue
+        [ "$volmode" = none ] && continue
+        [ "$volmode" = default ] && [ "$default_volmode" = 3 ] && continue
+        [ "$redacted" = "-" ] || continue
+        [ "$keystatus" = unavailable ] && continue
+        if [ "$token" != "-" ] && ! zfs list "$name/%recv" >/dev/null 2>&1
+        then
+            continue
+        fi
+        printf '%s\n' "$name"
+    done
+}
+
+# The names on stdin that have no usable link in /dev/zvol.
+without_link()
+{
+    while IFS= read -r name
+    do
+        [ -n "$name" ] || continue
+        [ $BLOCK "$DEV/zvol/$name" ] || printf '%s\n' "$name"
+    done
+}
+
+# "<zd device><tab><zvol>" for every whole zd device (zd640, not its partition zd640p1), named the
+# way the udev rule names it, with zvol_id.
+zd_map()
+{
+    for dev in "$DEV"/zd[0-9]*
+    do
+        case ${dev##*/} in
+            *p*) continue ;;
+        esac
+        [ -e "$dev" ] || continue
+        name=$("$ZVOL_ID" "$dev" 2>/dev/null) || continue
+        [ -n "$name" ] && printf '%s\t%s\n' "${dev##*/}" "$name"
+    done
+}
+
+# The zd device of a zvol ($1) in a map ($2), or nothing.
+zd_of()
+{
+    printf '%s\n' "$2" | awk -F '\t' -v n="$1" '$2 == n { print $1; exit }'
+}
+
+# The VM a volume belongs to (vm-<id>-disk-N, vm-<id>-state-..., base-<id>-disk-N), or nothing.
+vm_of()
+{
+    printf '%s\n' "${1##*/}" | sed -n 's/^\(vm\|base\)-\([0-9][0-9]*\)-.*/\2/p'
+}
+
+# udev's messages of this boot about zd devices it failed on.
+udev_failures()
+{
+    journalctl -b -u systemd-udevd.service -o cat --no-pager 2>/dev/null \
+        | grep -E '^zd[0-9]+(p[0-9]+)?: Failed to process device'
+}
+
+# Writes stdin to $1 so that a crash leaves the old file or the new one, never a short one: a
+# neighbour file, flushed to disk, renamed into place.
+write_atomic()
+{
+    cat > "$1.tmp" && chmod 0644 "$1.tmp" && sync -- "$1.tmp" && mv -f -- "$1.tmp" "$1"
+}
+
+if [ "$mode" = repair ]
+then
+    say()
+    {
+        echo "zvol-links-check: $*"
+    }
+    if [ ! -d "$ZFS_MODULE" ]
+    then
+        say "ZFS is not loaded, nothing to repair"
+        exit 0
+    fi
+    started=$(date '+%s')
+    deadline=$((started + REPAIR_SECONDS))
+    left()
+    {
+        l=$((deadline - $(date '+%s')))
+        [ "$l" -gt 0 ] || l=0
+        echo "$l"
+    }
+    if ! expected=$(expected_zvols)
+    then
+        say "zfs list failed: $(printf '%s\n' "$expected" | head -n 1)"
+        exit 1
+    fi
+    # "<zd device><tab><zvol><tab><times triggered>"
+    triggered=""
+    settled=0
+    while :
+    do
+        wait_for=$(left)
+        [ "$wait_for" -gt 10 ] && wait_for=10
+        # Time is up: settled keeps what the last settle said.
+        [ "$wait_for" -gt 0 ] || break
+        if udevadm settle --timeout="$wait_for" >/dev/null 2>&1
+        then
+            settled=1
+        else
+            settled=0
+        fi
+        missing=$(printf '%s\n' "$expected" | without_link)
+        [ -n "$missing" ] || break
+        [ "$(left)" -gt 0 ] || break
+        if [ "$settled" -eq 1 ]
+        then
+            map=$(zd_map)
+            for name in $(printf '%s\n' "$missing" | tr ' ' '\001')
+            do
+                name=$(printf '%s\n' "$name" | tr '\001' ' ')
+                zd=$(zd_of "$name" "$map")
+                # No zd device yet: ZFS has not created it, udev has nothing to process.
+                [ -n "$zd" ] || continue
+                times=$(printf '%s\n' "$triggered" | awk -F '\t' -v n="$name" '$2 == n { print $3; exit }')
+                times=${times:-0}
+                [ "$times" -lt 3 ] || continue
+                if [ "$dry_run" -eq 1 ]
+                then
+                    say "would re-trigger udev for $DEV/$zd ($name), which has no link"
+                else
+                    say "re-triggering udev for $DEV/$zd ($name), which has no link"
+                    udevadm trigger --action=add "$DEV/$zd" >/dev/null 2>&1
+                fi
+                triggered=$(printf '%s\n' "$triggered" | awk -F '\t' -v n="$name" '$2 != n && NF')
+                triggered="$triggered
+$zd	$name	$((times + 1))"
+            done
+            [ "$dry_run" -eq 0 ] || break
+        fi
+        sleep 1
+    done
+
+    # What happened: repaired (triggered, link there now), missing (still no link).
+    finished=$(date '+%s')
+    failures=$(udev_failures)
+    record="boot	$boot_id	$finished"
+    count_repaired=0
+    count_missing=0
+    for name in $(printf '%s\n' "$triggered" | awk -F '\t' 'NF { print $2 }' | tr ' ' '\001')
+    do
+        name=$(printf '%s\n' "$name" | tr '\001' ' ')
+        zd=$(printf '%s\n' "$triggered" | awk -F '\t' -v n="$name" '$2 == n { print $1; exit }')
+        if [ "$dry_run" -eq 0 ] && [ $BLOCK "$DEV/zvol/$name" ]
+        then
+            message=$(printf '%s\n' "$failures" | grep -E "^$zd: " | head -n 1)
+            record="$record
+repaired	$zd	$name	${message:--}"
+            count_repaired=$((count_repaired + 1))
+            say "the link of $name is back ($DEV/$zd)"
+        fi
+    done
+    missing=$(printf '%s\n' "$expected" | without_link)
+    map=$(zd_map)
+    for name in $(printf '%s\n' "$missing" | tr ' ' '\001')
+    do
+        name=$(printf '%s\n' "$name" | tr '\001' ' ')
+        zd=$(zd_of "$name" "$map")
+        record="$record
+missing	${zd:--}	$name	-"
+        count_missing=$((count_missing + 1))
+        say "still no link: $name (zd device: ${zd:-none})"
+    done
+    if [ "$settled" -eq 0 ]
+    then
+        record="$record
+note	-	-	udev was still busy after $REPAIR_SECONDS seconds"
+        say "udev was still busy after $REPAIR_SECONDS seconds"
+    fi
+    if [ "$dry_run" -eq 1 ]
+    then
+        say "dry run: $(printf '%s\n' "$expected" | grep -c .) zvols, $count_missing without a link, nothing changed"
+        exit 0
+    fi
+    if [ "$trigger" = boot ]
+    then
+        printf '%s\n' "$record" | write_atomic "$BOOT_RECORD"
+        if [ "$count_repaired" -gt 0 ] || [ "$count_missing" -gt 0 ]
+        then
+            mkdir -p -m 0755 "$STATE"
+            printf '%s\n' "$record" | write_atomic "$RECORD"
+        fi
+    fi
+    say "done after $((finished - started)) s: $(printf '%s\n' "$expected" | grep -c .) zvols, $count_repaired repaired, $count_missing without a link"
+    if [ "$trigger" != boot ]
+    then
+        say "run by hand: not recorded, the login shows only the repair at boot; run zvol-links-check"
+    fi
+    [ "$count_missing" -eq 0 ]
+    exit $?
+fi
+
+# Red (index 196 of the 256-colour palette) for a missing link (a VM will not start), orange
+# (index 208) for a repair and for problems, green for the all-clear.
+red=$(printf '\033[38;5;196m')
+orange=$(printf '\033[38;5;208m')
+green=$(printf '\033[32m')
+reset=$(printf '\033[0m')
+
+# Writes stdin next to the target and renames it, so a login never shows a half-written file.
+publish()
+{
+    cat > "$1.tmp.$$"
+    chmod 0644 "$1.tmp.$$"
+    mv -f "$1.tmp.$$" "$1"
+}
+
+# Text wrapped at word boundaries and indented by the given prefix, so that every line stays
+# below 80 columns, also in the last successful result that a failed check repeats with four
+# more columns of indentation.
+wrap()
+{
+    fold -s -w $((75 - ${#1})) | sed 's/ *$//' | sed "s/^/$1/"
+}
+
+show()
+{
+    if [ "$quiet" -eq 0 ]
+    then
+        cat "$FILE"
+    fi
+}
+
+footer="  checked $checked_at ($checked_by)
+  check again: zvol-links-check"
+
+# Writes CHECK FAILED with the reason (already indented) and the last successful result.
+fail()
+{
+    if [ -s "$LAST" ]
+    then
+        last="  last successful check:
+$(sed 's/^/    /' "$LAST")"
+    else
+        last="  no successful check since boot"
+    fi
+    printf '%sZvol links: CHECK FAILED\n%s\n%s\n%s%s\n' \
+        "$orange" "$1" "$footer" "$last" "$reset" | publish "$FILE"
+    echo "zvol-links-check: $(printf '%s\n' "$1" | head -n 1 | sed 's/^ *//')" >&2
+    show
+    exit 1
+}
+
+# Said instead of an OK over nothing.
+nothing_checked()
+{
+    printf '%sZvol links: NOTHING CHECKED\n%s\n  switch the check off: login-warnings disable zvol-links\n%s%s\n' \
+        "$orange" "$1" "$footer" "$reset" | publish "$FILE"
+    publish "$LAST" < "$FILE"
+    show
+    exit 0
+}
+
+if [ ! -d "$ZFS_MODULE" ] || ! command -v zfs >/dev/null 2>&1
+then
+    nothing_checked "  ZFS is not loaded (no $ZFS_MODULE or no zfs command)"
+fi
+if ! expected=$(expected_zvols)
+then
+    fail "$(printf '%s\n' "zfs list failed: $(printf '%s\n' "$expected" | head -n 3 | tr '\n' ' ')" | wrap '  ')"
+fi
+count=$(printf '%s' "$expected" | grep -c .)
+if [ "$count" -eq 0 ]
+then
+    nothing_checked "  no zvol that should have a link in /dev/zvol"
+fi
+if [ "$count" -eq 1 ]
+then
+    zvols="1 zvol"
+else
+    zvols="$count zvols"
+fi
+missing=$(printf '%s\n' "$expected" | without_link)
+count_missing=$(printf '%s' "$missing" | grep -c .)
+
+# What the repair did in this boot, and the last repair of an earlier boot.
+boot_run=""
+repaired_now=""
+if [ -s "$BOOT_RECORD" ] && [ "$(awk -F '\t' 'NR == 1 && $1 == "boot" { print $2 }' "$BOOT_RECORD")" = "$boot_id" ]
+then
+    boot_run=$(awk -F '\t' 'NR == 1 { print $3 }' "$BOOT_RECORD")
+    repaired_now=$(awk -F '\t' '$1 == "repaired" { print $2 "\t" $3 "\t" $4 }' "$BOOT_RECORD")
+fi
+last_repair=""
+if [ -s "$RECORD" ] && [ "$(awk -F '\t' 'NR == 1 && $1 == "boot" { print $2 }' "$RECORD")" != "$boot_id" ]
+then
+    last_time=$(awk -F '\t' 'NR == 1 { print $3 }' "$RECORD")
+    last_repair=$(awk -F '\t' -v t="$(date -d "@${last_time:-0}" '+%Y-%m-%d %H:%M:%S %:z' 2>/dev/null)" \
+        '$1 == "repaired" || $1 == "missing" { print t " " $1 ": " $2 " " $3 }' "$RECORD")
+fi
+partition_failures=$(udev_failures | sed -n 's/^\(zd[0-9][0-9]*p[0-9][0-9]*\): .*/\1/p' | LC_ALL=C sort -u)
+
+lines=""
+add()
+{
+    lines="$lines$1
+"
+}
+
+if [ "$count_missing" -gt 0 ]
+then
+    colour=$red
+    title="Zvol links: MISSING"
+    add "$(printf '%s\n' "$count_missing of $zvols have no link in $DEV/zvol, and a VM that uses one will not start:" | wrap '  ')"
+    map=$(zd_map)
+    commands=""
+    for name in $(printf '%s\n' "$missing" | tr ' ' '\001')
+    do
+        name=$(printf '%s\n' "$name" | tr '\001' ' ')
+        zd=$(zd_of "$name" "$map")
+        vm=$(vm_of "$name")
+        add "$(printf '%s\n' "$name (${zd:-no zd device}${vm:+, VM $vm})" | wrap '    ')"
+        # Without a zd device there is nothing to trigger, and a start would wait for the link.
+        if [ -n "$zd" ]
+        then
+            commands="$commands
+    udevadm trigger --action=add $DEV/$zd && udevadm settle"
+            if [ -n "$vm" ]
+            then
+                commands="$commands
+    qm start $vm"
+            fi
+        fi
+    done
+    if [ -n "$commands" ]
+    then
+        add "  bring the link back, then start the VM:"
+        add "$(printf '%s\n' "$commands" | grep . | awk '!seen[$0]++')"
+    fi
+    if printf '%s\n' "$missing" | while IFS= read -r name; do [ -n "$(zd_of "$name" "$map")" ] || exit 1; done
+    then
+        :
+    else
+        add "$(printf '%s\n' "a volume without a zd device has not been opened by ZFS yet; zvol_wait (zfs-volume-wait.service) waits for it" | wrap '  ')"
+    fi
+elif [ -n "$repaired_now" ]
+then
+    colour=$orange
+    title="Zvol links: REPAIRED AT BOOT"
+    add "  udev had not created these links; the repair at boot re-triggered udev:"
+    add "$(printf '%s\n' "$repaired_now" | awk -F '\t' '{ print "    " $2 " (" $1 ")" }')"
+    add "  $zvols, all with a link in $DEV/zvol now"
+else
+    colour=$green
+    title="Zvol links: OK"
+    add "  $zvols, all with a link in $DEV/zvol"
+fi
+if [ -n "$boot_run" ]
+then
+    if [ -n "$repaired_now" ]
+    then
+        add "  repaired at $(date -d "@$boot_run" '+%Y-%m-%d %H:%M:%S %:z' 2>/dev/null)"
+        messages=$(printf '%s\n' "$repaired_now" | awk -F '\t' '$3 != "-" { print $3 }')
+        if [ -n "$messages" ]
+        then
+            add "  udev's message:"
+            add "$(printf '%s\n' "$messages" | wrap '    ')"
+        fi
+    else
+        add "  boot repair: ran $(date -d "@$boot_run" '+%Y-%m-%d %H:%M:%S %:z' 2>/dev/null), nothing to repair"
+    fi
+else
+    add "  boot repair: not run in this boot (it runs before the guests start)"
+fi
+if [ -n "$partition_failures" ]
+then
+    if [ "$colour" = "$green" ]
+    then
+        colour=$orange
+    fi
+    add "$(printf '%s\n' "udev failed on a partition this boot: $(printf '%s\n' "$partition_failures" | tr '\n' ' ')(Proxmox VE needs no partition links)" | wrap '  ')"
+fi
+if [ -n "$last_repair" ]
+then
+    add "  last repair in an earlier boot:"
+    add "$(printf '%s\n' "$last_repair" | wrap '    ')"
+fi
+
+printf '%s%s\n%s%s%s\n' "$colour" "$title" "$lines" "$footer" "$reset" | publish "$FILE"
+publish "$LAST" < "$FILE"
+show
