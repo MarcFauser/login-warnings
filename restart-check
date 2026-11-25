@@ -1,0 +1,344 @@
+#!/bin/sh
+# restart-check
+#
+# Reports running programs that still use files an update has replaced, usually libraries, and
+# writes the result to /run/login-warnings/restart; login-warnings shows that file in every
+# interactive login shell, as one section of its display. The file always says when the check
+# ran: green "none", an orange list of what needs a restart with the commands, or an orange
+# "CHECK FAILED" followed by the last successful result (kept in /run/login-warnings/.restart.last).
+#
+# A program keeps the files it has mapped until it ends. dpkg replaces a file by renaming the
+# new one over the old one, so a running program still maps the old file, which the kernel
+# then names "<path> (deleted)" in /proc/<pid>/maps. The check reads the executable mappings of
+# every process, as needrestart does, and leaves out what is deleted by design: SysV shared
+# memory, memfd, /dev, /tmp, /run and a few JIT files (needrestart's blacklist_mappings).
+#
+# Each process is assigned by its cgroup: a systemd service, systemd itself (PID 1), a user's
+# session or user manager, a Proxmox VE VM. A process with another root file system than PID 1
+# that is not part of a system service runs in a container; the login-warnings inside the
+# container sees it, so here it is only counted. (Services with their own mount namespace, and
+# chrooted service processes like postfix's, are services of this system.) Services that should
+# not be restarted on the fly, dbus, systemd-logind, networking and the like (the lists of
+# needrestart and checkrestart), are named apart from the restart command.
+#
+# Not seen: scripts of interpreters (Python, Perl) whose modules changed, and a file changed in
+# place instead of replaced. The running kernel is not compared with the installed one.
+#
+# Runs after every boot, dpkg run and apt update (login-warnings). Run it by hand at any time,
+# as root, also after restarting something; --details lists every process with its files.
+#
+# Usage: restart-check [--quiet] [--details] [--trigger boot|dpkg|apt|manual]
+PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+cd /
+
+DIR=/run/login-warnings
+FILE=$DIR/restart
+# Hidden from the login display: the last successful result.
+LAST=$DIR/.restart.last
+# Read for the processes, their mappings, cgroups and root directories.
+PROC=/proc
+
+usage()
+{
+    echo "Usage: restart-check [--quiet] [--details] [--trigger boot|dpkg|apt|manual]" >&2
+    exit 2
+}
+
+quiet=0
+details=0
+trigger=manual
+while [ $# -gt 0 ]
+do
+    case $1 in
+        --quiet) quiet=1 ;;
+        --details) details=1 ;;
+        --trigger) shift; trigger=${1:-} ;;
+        *) usage ;;
+    esac
+    shift
+done
+
+case $trigger in
+    boot) checked_by="at boot" ;;
+    dpkg) checked_by="after a package change" ;;
+    apt) checked_by="after apt update" ;;
+    manual) checked_by="by hand" ;;
+    *) usage ;;
+esac
+
+if [ "$(id -u)" -ne 0 ]
+then
+    echo "Please run as root." >&2
+    exit 1
+fi
+
+mkdir -p -m 0755 "$DIR"
+checked_at=$(date '+%Y-%m-%d %H:%M:%S %:z')
+
+# Orange (index 208 of the 256-colour palette) for something to do, green for the all-clear.
+orange=$(printf '\033[38;5;208m')
+green=$(printf '\033[32m')
+reset=$(printf '\033[0m')
+
+# Writes stdin next to the target and renames it, so a login never shows a half-written file.
+publish()
+{
+    cat > "$1.tmp.$$"
+    chmod 0644 "$1.tmp.$$"
+    mv -f "$1.tmp.$$" "$1"
+}
+
+# Text wrapped at word boundaries and indented by the given prefix, so that every line stays
+# below 80 columns, also in the last successful result that a failed check repeats with four
+# more columns of indentation.
+wrap()
+{
+    fold -s -w $((75 - ${#1})) | sed 's/ *$//' | sed "s/^/$1/"
+}
+
+# The words on stdin as a command ($1 the indentation, $2 the command), split with backslashes
+# so that every line stays below 80 columns and the lines can be copied in one piece.
+command_lines()
+{
+    tr ' ' '\n' | grep . | awk -v ind="$1" -v cmd="$2" '
+        BEGIN { line = ind cmd }
+        { if (length(line) + 1 + length($0) > 73) { print line " \\"; line = ind "  " $0 }
+          else line = line " " $0 }
+        END { print line }'
+}
+
+show()
+{
+    if [ "$quiet" -eq 0 ]
+    then
+        cat "$FILE"
+    fi
+}
+
+# The result is one section of the login display: a title line with the state, the details
+# indented by two spaces, lines kept below 80 columns, one colour for the whole section.
+footer="  checked $checked_at ($checked_by)
+  check again: restart-check"
+
+# Writes CHECK FAILED with the reason (already indented) and the last successful result.
+fail()
+{
+    if [ -s "$LAST" ]
+    then
+        last="  last successful check:
+$(sed 's/^/    /' "$LAST")"
+    else
+        last="  no successful check since boot"
+    fi
+    printf '%sRestart needed: CHECK FAILED\n%s\n%s\n%s%s\n' \
+        "$orange" "$1" "$footer" "$last" "$reset" | publish "$FILE"
+    echo "restart-check: $(printf '%s\n' "$1" | head -n 1 | sed 's/^ *//')" >&2
+    show
+    exit 1
+}
+
+# "M<tab><pid><tab><path>" for every executable mapping of a deleted file, once per process and
+# path, then "R<tab><n>": the number of processes whose maps could be read. A maps line is
+# "<address> <permissions> <offset> <device> <inode> <path>"; the path may contain spaces.
+# getline instead of awk's own file list, because a process that ends during the scan must not
+# stop it.
+scan=$(for m in "$PROC"/[0-9]*/maps
+    do
+        printf '%s\n' "$m"
+    done | awk '
+    {
+        f = $0
+        pid = f; sub(/\/maps$/, "", pid); sub(/.*\//, "", pid)
+        r = (getline line < f)
+        if (r < 0) next
+        read++
+        while (r > 0) {
+            if (match(line, /^[^ ]+ +[^ ]+ +[^ ]+ +[^ ]+ +[0-9]+ +/)) {
+                split(line, a, / +/)
+                path = substr(line, RLENGTH + 1)
+                if (a[2] ~ /x/ && a[5] != "0" && sub(/ \(deleted\)$/, "", path) &&
+                    path !~ /^\/(SYSV|drm( |$)|dev\/|memfd:|\[aio\]|i915)/ &&
+                    path !~ /^(\/var)?\/(tmp|run)\// &&
+                    path !~ /\/orcexec\.[A-Za-z0-9]+$/ && path !~ /\/#[0-9]+$/ &&
+                    path !~ /\/jna[0-9]+\.tmp$/ && path !~ /\/\.cache\/JNA\// &&
+                    !((pid, path) in seen)) {
+                    seen[pid, path] = 1
+                    print "M\t" pid "\t" path
+                }
+            }
+            r = (getline line < f)
+        }
+        close(f)
+    }
+    END { print "R\t" read + 0 }')
+read_count=$(printf '%s\n' "$scan" | awk -F '\t' '$1 == "R" { print $2 }')
+if [ -z "$read_count" ] || [ "$read_count" -eq 0 ]
+then
+    fail "$(printf '%s\n' "could not read the mappings of any process ($PROC/<pid>/maps)" | wrap '  ')"
+fi
+hits=$(printf '%s\n' "$scan" | awk -F '\t' '$1 == "M" { print $2 "\t" $3 }')
+
+# The root directory that the paths above are seen from; a process whose root differs and that
+# is not a system service runs in a container.
+ref_root=$(stat -L -c '%d:%i' "$PROC/1/root" 2>/dev/null)
+if [ -z "$ref_root" ]
+then
+    fail "$(printf '%s\n' "could not read the root directory of PID 1 ($PROC/1/root)" | wrap '  ')"
+fi
+
+# Services that should not be restarted on the fly: needrestart's override_rc (they break
+# sessions, the network or containers, or are display managers and oneshot jobs) and
+# checkrestart's dangerous-unit list.
+careful='^(dbus|gdm|greetd|kdm|nodm|plasmalogin|sddm|wdm|xdm|lightdm|slim|lxdm|xrdp|bird|network|NetworkManager|ModemManager|wpa_supplicant|ifup|openvpn|quagga|frr|tinc|(open|free|libre|strong)swan|bluetooth|getty@.+\.service|console-getty|usbguard\.service|zfs-fuse|mythtv-backend|xendomains|lxc|lxcfs|libvirt|virtlogd|virtlockd|docker|bacula-|qrtr-ns|rmtfs|emergency\.service|rescue\.service|elogind|apt-daily\.service|apt-daily-upgrade\.service|unattended-upgrades\.service|cron-.*\.service|rc-local\.service|systemd-logind|systemd-nspawn)'
+# A system service, also below nested slices (system-postgresql.slice) and with a cgroup of its
+# own below it (systemd-udevd.service/udev on Proxmox VE 9).
+service_re='^/system\.slice/([^/]+\.slice/)*[^/]+\.service(/.*)?$'
+
+services=""
+careful_services=""
+systemd=0
+users=""
+vms=""
+others=""
+count_others=0
+in_containers=0
+affected=0
+detail_lines=""
+for pid in $(printf '%s\n' "$hits" | awk -F '\t' 'NF { print $1 }' | sort -un)
+do
+    # A process that ended since the scan needs nothing any more.
+    [ -d "$PROC/$pid" ] || continue
+    cgroup=$(sed -n 's/^0:://p' "$PROC/$pid/cgroup" 2>/dev/null | head -n 1)
+    comm=$(cat "$PROC/$pid/comm" 2>/dev/null)
+    root=$(stat -L -c '%d:%i' "$PROC/$pid/root" 2>/dev/null)
+    if [ -n "$root" ] && [ "$root" != "$ref_root" ] && ! printf '%s\n' "$cgroup" | grep -Eq -- "$service_re"
+    then
+        in_containers=$((in_containers + 1))
+        continue
+    fi
+    affected=$((affected + 1))
+    if [ "$pid" = 1 ] || [ "$cgroup" = /init.scope ]
+    then
+        systemd=1
+        what="systemd"
+    elif printf '%s\n' "$cgroup" | grep -Eq -- "$service_re"
+    then
+        unit=$(printf '%s\n' "$cgroup" | sed 's|^/system\.slice/\([^/]*\.slice/\)*\([^/]*\.service\).*|\2|')
+        what=$unit
+        if printf '%s\n' "$unit" | grep -Eq -- "$careful"
+        then
+            careful_services="$careful_services $unit"
+        else
+            services="$services $unit"
+        fi
+    elif uid=$(printf '%s\n' "$cgroup" | sed -n 's|^/user\.slice/user-\([0-9][0-9]*\)\.slice/.*|\1|p') && [ -n "$uid" ]
+    then
+        user=$(getent passwd "$uid" | cut -d: -f1)
+        user=${user:-uid $uid}
+        what="session of $user"
+        users="$users
+$user"
+    elif vm=$(printf '%s\n' "$cgroup" | sed -n 's|^/qemu\.slice/\([0-9][0-9]*\)\.scope$|\1|p') && [ -n "$vm" ]
+    then
+        what="VM $vm"
+        vms="$vms $vm"
+    else
+        what="other (${cgroup:-no cgroup})"
+        others="$others ${comm:-?} (pid $pid)"
+        count_others=$((count_others + 1))
+    fi
+    if [ "$details" -eq 1 ]
+    then
+        detail_lines="$detail_lines$pid $comm: $what
+$(printf '%s\n' "$hits" | awk -F '\t' -v p="$pid" '$1 == p { print "    " $2 }')
+"
+    fi
+done
+services=$(printf '%s\n' $services | grep . | LC_ALL=C sort -u)
+careful_services=$(printf '%s\n' $careful_services | grep . | LC_ALL=C sort -u)
+users=$(printf '%s\n' "$users" | grep . | LC_ALL=C sort -u)
+vms=$(printf '%s\n' $vms | grep . | sort -un)
+count_services=$(printf '%s' "$services" | grep -c .)
+count_careful=$(printf '%s' "$careful_services" | grep -c .)
+count_users=$(printf '%s' "$users" | grep -c .)
+count_vms=$(printf '%s' "$vms" | grep -c .)
+
+# "<n> <word>", with an s for more than one.
+counted()
+{
+    if [ "$1" -eq 1 ]
+    then
+        echo "1 $2"
+    else
+        echo "$1 $2s"
+    fi
+}
+
+lines=""
+add()
+{
+    lines="$lines$1
+"
+}
+
+if [ "$affected" -eq 0 ]
+then
+    colour=$green
+    title="Restart needed: none"
+    add "  no program of $read_count processes uses a replaced file"
+else
+    colour=$orange
+    parts=""
+    [ "$((count_services + count_careful))" -gt 0 ] && parts="$parts, $(counted $((count_services + count_careful)) service)"
+    [ "$systemd" -eq 1 ] && parts="$parts, systemd"
+    [ "$count_users" -gt 0 ] && parts="$parts, $(counted "$count_users" user)"
+    [ "$count_vms" -gt 0 ] && parts="$parts, $(counted "$count_vms" VM)"
+    [ "$count_others" -gt 0 ] && parts="$parts, $(counted "$count_others" "other program")"
+    title="Restart needed: ${parts#, }"
+    if [ "$affected" -eq 1 ]
+    then
+        uses="uses"
+    else
+        uses="use"
+    fi
+    add "$(printf '%s\n' "$affected of $read_count processes $uses files that an update has replaced:" | wrap '  ')"
+    if [ "$count_services" -gt 0 ]
+    then
+        add "$(printf '%s\n' "services: $(printf '%s\n' "$services" | tr '\n' ' ')" | wrap '    ')"
+        add "  restart them:"
+        add "$(printf '%s\n' $services | command_lines '    ' 'systemctl try-restart')"
+    fi
+    if [ "$count_careful" -gt 0 ]
+    then
+        add "$(printf '%s\n' "restart with care, or reboot: $(printf '%s\n' "$careful_services" | tr '\n' ' ')" | wrap '  ')"
+    fi
+    if [ "$systemd" -eq 1 ]
+    then
+        add "  systemd itself: systemctl daemon-reexec"
+    fi
+    if [ "$count_users" -gt 0 ]
+    then
+        add "$(printf '%s\n' "logged-in users (log out and in again): $(printf '%s\n' "$users" | tr '\n' ' ')" | wrap '  ')"
+    fi
+    if [ "$count_vms" -gt 0 ]
+    then
+        add "$(printf '%s\n' "VMs whose QEMU process uses them (stop and start the VM): $(printf '%s\n' "$vms" | tr '\n' ' ')" | wrap '  ')"
+    fi
+    if [ "$count_others" -gt 0 ]
+    then
+        add "$(printf '%s\n' "other programs:$others" | wrap '  ')"
+    fi
+    add "  show the files: restart-check --details"
+fi
+if [ "$in_containers" -gt 0 ]
+then
+    add "$(printf '%s\n' "not counted: $(counted "$in_containers" process) in containers, which their own login-warnings sees" | wrap '  ')"
+fi
+
+printf '%s%s\n%s%s%s\n' "$colour" "$title" "$lines" "$footer" "$reset" | publish "$FILE"
+publish "$LAST" < "$FILE"
+show
+if [ "$details" -eq 1 ] && [ -n "$detail_lines" ]
+then
+    printf '\nProcesses and the replaced files they use:\n%s' "$detail_lines"
+fi

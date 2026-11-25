@@ -684,3 +684,55 @@ Tested with three fake cases: the lines apt printed on the host, a package that 
 over without a source (with an architecture suffix on one name), and a failed simulation. Four
 copies with one part taken out failed there. On the host, from a temporary copy, the section
 named the kernel and the command, with the real result file untouched.
+
+## 2026-11-25 - 6.0.0: programs that use replaced files
+
+After bringing the same Proxmox VE host up to date, the user asked whether the login could also
+show services and programs that still use outdated libraries. An update replaces a library on
+disk; a program that runs keeps the old one until it restarts. On another server that week,
+systemd, logind, sshd, journald, networkd and PostgreSQL had kept an old libzstd after a
+security update until a reboot.
+
+Debian has two tools for this, and both were read before anything was built: `needrestart`
+(Perl, the main script and its example configuration, read from GitHub) and `checkrestart` from
+`debian-goodies` 0.88.2 (Python, downloaded with apt into a temporary folder and unpacked, not
+installed; sources.debian.org answered with a proof-of-work page). Both find processes whose
+maps name a deleted file and assign them to a systemd unit by their cgroup. They differ in what
+counts: `checkrestart` reports every deleted file a process holds, logs and data included, and
+needs a long list of excluded paths or a filter to files from packages; `needrestart` looks only
+at executable mappings. The check follows `needrestart` here, with its list of what is deleted
+by design (SysV, memfd, `/dev`, `/tmp`, `/run`, JIT files). It takes the services that should not
+be restarted on the fly from both, `systemctl try-restart` and a details view from
+`checkrestart`. Neither is called: `needrestart` hooks into apt and by default asks after every
+upgrade, which would change how apt behaves on the servers; `checkrestart` needs Python and
+`lsof` and writes for a terminal. Its filter to package files was left out on purpose, because
+it would miss software outside packages, such as GitLab's `/opt/gitlab/embedded` or a Node.js
+from nvm, which need a restart after their own updates as much as anything else.
+
+Containers needed a measurement. The first idea, a mount namespace other than PID 1's, was
+wrong: on a Debian 13 container, caddy, MariaDB, systemd-logind, systemd-networkd and postfix's
+master ran in mount namespaces of their own (`ProtectSystem`, `PrivateTmp`) and are services of
+that system, while the Docker containers also had their own. The root file system told them
+apart, Docker containers have their own, except for postfix's `pickup`, which runs chrooted and
+so has another root as well, inside `postfix.service`. So a process counts as a container's when
+its root differs and it is not part of a system service. The same container showed why only
+executable mappings count: 206 of 274 deleted mappings were not executable (memfd, `/dev/zero`,
+SysV), and the 68 executable ones were all `memfd:doublemapper` of a dotnet in a Docker container.
+
+Tested with seven fake cases on a fake `/proc` (nothing replaced next to what is deleted by
+design; every kind of process at once; the details; a restart command long enough to be split;
+only a container; nothing readable; no root for PID 1). Nine copies with one rule taken out each
+failed there. On the container, from a temporary copy: green, 44 processes, 35 ms. As a
+positive control, a `sleep` started in the SSH session with `LD_PRELOAD` on a copy of libz whose
+file was then deleted: the check named a session of root with that file, and the process and the
+folder were removed afterwards.
+
+Then on the Proxmox VE 9 host that had just been updated, from a temporary copy: 35 of 451
+processes in 302 ms, 17 services, systemd-logind among those to restart with care, systemd
+itself, and six VMs, each as `/qemu.slice/<vmid>.scope` with its `kvm` and `swtpm`. The run also
+found a rule wrong: systemd-udevd runs in `systemd-udevd.service/udev`, a cgroup below its
+service, and would have been listed as another program. A service now counts with the cgroups
+below it as well; a fake case covers it, and a copy with the old rule fails there. The host ran
+no LXC containers, so containers have only been seen from inside one so far.
+
+Version 6.0.0, because a new check is a new function.

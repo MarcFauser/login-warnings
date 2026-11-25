@@ -4,6 +4,19 @@ All notable changes to this project are documented in this file.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project
 uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [6.0.0] - 2026-11-25
+
+### Added
+
+- A new check, `restart` (`restart-check`): running programs that still use files an update has
+  replaced, usually libraries. It reads the executable mappings in `/proc/<pid>/maps`, as
+  needrestart does, and assigns each process by its cgroup: services, with a `systemctl
+  try-restart` command for exactly those; services that should not be restarted on the fly
+  (dbus, systemd-logind, networking and others, from the lists of needrestart and checkrestart),
+  apart from the command; systemd itself (`systemctl daemon-reexec`); logged-in users; Proxmox
+  VE VMs. Processes in containers are only counted. `--details` lists every process with its
+  files. `install.sh` switches it on everywhere.
+
 ## [5.1.0] - 2026-11-23
 
 ### Added

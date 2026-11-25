@@ -29,13 +29,14 @@ SSH password login: OFF
 
 Every line stays below 80 columns, so nothing wraps in a normal terminal window.
 
-Three checks so far:
+Four checks so far:
 
 | Check | Reports |
 | --- | --- |
 | `apt-updates` | Package updates offered by the package lists, by name, security updates separately, how old the lists are, installed packages that no package source offers any more (in use, or left over from an older release), config files of removed packages that can go or must stay, and the `apt purge` command for exactly what can go; packages `apt autoremove` would remove, with an `apt remove` command for exactly those. |
 | `pg-collation` | PostgreSQL databases whose collation version no longer matches glibc, with a fix script. Covers the Debian/PGDG clusters and the PostgreSQL bundled with the GitLab Linux package. |
 | `ssh-password` | Whether the SSH server accepts password logins, where the setting comes from, and how to allow keys only. |
+| `restart` | Programs that still use files an update has replaced, usually libraries: the services with a `systemctl try-restart` command for exactly those, systemd itself, logged-in users and Proxmox VE VMs. |
 
 ## How it works
 
@@ -51,6 +52,7 @@ Three checks so far:
 | `/usr/local/sbin/ssh-password-check` | The `ssh-password` check; writes `/run/login-warnings/ssh-password`. |
 | `/usr/local/sbin/pg-collation-check` | The `pg-collation` check; writes `/run/login-warnings/pg-collation`. |
 | `/usr/local/sbin/pg-collation-fix` | Runs `REINDEX DATABASE` on every affected database, then `ALTER DATABASE ... REFRESH COLLATION VERSION`. The version is only refreshed if the reindex succeeded. With `--gitlab` it works on GitLab's bundled PostgreSQL. |
+| `/usr/local/sbin/restart-check` | The `restart` check; writes `/run/login-warnings/restart`. |
 | `/var/lib/login-warnings` | When the last apt update started and when it last reached a repository, and a marker while an apt update has not reached one; the latest release and when it was checked. |
 
 Nothing is ever silent: an empty login would look exactly like an all-clear. Every section
@@ -66,8 +68,8 @@ windows on the same connection.
 
 ## Choosing the checks
 
-`install.sh` switches on `apt-updates`, `ssh-password` if an SSH server (`sshd`) is installed,
-and `pg-collation` if PostgreSQL is installed locally (from the Debian or PGDG packages, or
+`install.sh` switches on `apt-updates` and `restart`, `ssh-password` if an SSH server (`sshd`)
+is installed, and `pg-collation` if PostgreSQL is installed locally (from the Debian or PGDG packages, or
 bundled with the GitLab Linux package).
 A check you switch off stays off when you install an update.
 
@@ -88,6 +90,7 @@ login-warnings
 apt-updates-check
 pg-collation-check
 ssh-password-check
+restart-check
 ```
 
 ## apt-updates: package updates
@@ -401,6 +404,56 @@ refuse addresses for a while that keep failing to log in (`PerSourcePenalties`, 
 of penalty on by default); five checks within 0.3 seconds were not refused (OpenSSH 10.0,
 measured 2026-11-14).
 
+## restart: programs that use replaced files
+
+An update replaces a library on disk, but a program that is already running keeps using the old
+one, with its bugs and security holes, until it is restarted. dpkg replaces a file by renaming
+the new one over it, so the running program still maps the old file, and the kernel names it
+`<path> (deleted)` in `/proc/<pid>/maps`. The maintainer scripts of many packages restart their
+own services; what is left shows up here. Debian has two tools for this question, `needrestart`
+and `checkrestart` (in `debian-goodies`); the check follows their method and needs neither.
+
+It reads the executable mappings of every process, as `needrestart` does: a deleted log or
+data file is not code and needs no restart. It leaves out what is deleted by design: SysV shared
+memory, `memfd` (where dotnet keeps executable code), `/dev`, `/tmp`, `/run` and a few JIT
+files. Each process is assigned by its cgroup:
+
+| cgroup of the process | shown as |
+| --- | --- |
+| `/system.slice/.../<unit>.service`, or a cgroup below it | the service, with `systemctl try-restart` for exactly these |
+| a service that should not be restarted on the fly | `restart with care, or reboot` |
+| `/init.scope` (PID 1) | `systemd itself: systemctl daemon-reexec` |
+| `/user.slice/user-<uid>.slice/...` | the user, who logs out and in again |
+| `/qemu.slice/<vmid>.scope` (Proxmox VE: its `kvm` and `swtpm`) | the VM, which needs to be stopped and started |
+| anything else | the program and its PID |
+
+The services that should not be restarted on the fly are those that `needrestart` does not
+restart by itself (`override_rc`: dbus, systemd-logind, networking, NetworkManager, getty,
+docker, lxc, lxcfs, libvirt, display managers, oneshot jobs and others) and `checkrestart`'s
+`dangerous-unit` list (dbus, systemd-logind, gdm, console-getty).
+
+A process whose root directory is another file system than PID 1's and that is not part of a
+system service runs in a container; the files in its maps are the container's. It is only
+counted, and the login-warnings inside the container sees it. Neither the mount namespace nor
+the root alone tells a container (measured on a Debian 13 container, 2026-11-25): services with
+`ProtectSystem` or `PrivateTmp` have a mount namespace of their own but the same root, Docker
+containers have a root of their own, and postfix's chrooted `pickup` has another root but runs
+in `postfix.service`.
+
+`restart-check --details` lists every process with the replaced files it uses.
+
+Not seen: scripts of interpreters (Python, Perl) whose modules changed, a file that is changed in
+place instead of replaced, and whether the running kernel is older than the installed one. The
+result is the state when the check last ran: after restarting something by hand, run
+`restart-check`.
+
+| State | Section |
+| --- | --- |
+| nothing uses a replaced file | `Restart needed: none` and how many processes were read (green) |
+| something does | `Restart needed: 2 services, systemd, 1 user`, the lists and commands above (orange) |
+| only processes in containers do | `none`, with a line that counts them (green) |
+| no process could be read | `Restart needed: CHECK FAILED`, then the last successful result (orange); exit status 1 |
+
 ## Requirements
 
 - Debian or a derivative with systemd, dpkg and apt
@@ -476,7 +529,7 @@ systemctl disable --now login-warnings.service
 rm -f /etc/systemd/system/login-warnings.service /etc/dpkg/dpkg.cfg.d/login-warnings \
       /etc/apt/apt.conf.d/80login-warnings /etc/profile.d/login-warnings.sh \
       /usr/local/sbin/login-warnings /usr/local/sbin/apt-updates-check \
-      /usr/local/sbin/ssh-password-check \
+      /usr/local/sbin/ssh-password-check /usr/local/sbin/restart-check \
       /usr/local/sbin/pg-collation-check /usr/local/sbin/pg-collation-fix
 rm -rf /etc/login-warnings.d /run/login-warnings /var/lib/login-warnings /usr/local/src/login-warnings
 systemctl daemon-reload

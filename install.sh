@@ -7,6 +7,7 @@
 #   /usr/local/sbin/ssh-password-check           writes /run/login-warnings/ssh-password
 #   /usr/local/sbin/pg-collation-check           writes /run/login-warnings/pg-collation
 #   /usr/local/sbin/pg-collation-fix             rebuilds indexes, refreshes the collation version
+#   /usr/local/sbin/restart-check                writes /run/login-warnings/restart
 #   /etc/systemd/system/login-warnings.service   runs the checks after every boot
 #   /etc/dpkg/dpkg.cfg.d/login-warnings          runs the checks after every dpkg run
 #   /etc/apt/apt.conf.d/80login-warnings         refreshes the package lists daily, runs the checks after every apt update
@@ -14,9 +15,9 @@
 #   /etc/login-warnings.d/<check>                one file per enabled check (<check>.off: switched off)
 #   /var/lib/login-warnings                      when the last apt update started and reached a repository, whether one is unfinished
 #
-# Registers apt-updates, ssh-password if an SSH server (sshd) is installed, and pg-collation
-# if PostgreSQL is installed locally (Debian/PGDG packages, or the PostgreSQL bundled with the
-# GitLab Linux package). A check that was
+# Registers apt-updates and restart, ssh-password if an SSH server (sshd) is installed, and
+# pg-collation if PostgreSQL is installed locally (Debian/PGDG packages, or the PostgreSQL
+# bundled with the GitLab Linux package). A check that was
 # switched off (login-warnings disable) stays off. Run as root from the unpacked release
 # archive (/usr/local/src/login-warnings) or a checkout of this repository. Safe to run again;
 # existing files are overwritten, which is also how updates are applied (login-warnings update
@@ -32,7 +33,7 @@ then
 fi
 
 for file in login-warnings apt-updates-check ssh-password-check pg-collation-check pg-collation-fix \
-    login-warnings.service dpkg-login-warnings.cfg apt-login-warnings.conf login-warnings.sh
+    restart-check login-warnings.service dpkg-login-warnings.cfg apt-login-warnings.conf login-warnings.sh
 do
     if [ ! -f "$src/$file" ]
     then
@@ -84,6 +85,7 @@ install -m 0755 -o root -g root "$src/apt-updates-check" /usr/local/sbin/apt-upd
 install -m 0755 -o root -g root "$src/ssh-password-check" /usr/local/sbin/ssh-password-check
 install -m 0755 -o root -g root "$src/pg-collation-check" /usr/local/sbin/pg-collation-check
 install -m 0755 -o root -g root "$src/pg-collation-fix" /usr/local/sbin/pg-collation-fix
+install -m 0755 -o root -g root "$src/restart-check" /usr/local/sbin/restart-check
 install -m 0644 -o root -g root "$src/login-warnings.service" /etc/systemd/system/login-warnings.service
 install -m 0644 -o root -g root "$src/dpkg-login-warnings.cfg" /etc/dpkg/dpkg.cfg.d/login-warnings
 install -m 0644 -o root -g root "$src/apt-login-warnings.conf" /etc/apt/apt.conf.d/80login-warnings
@@ -127,6 +129,7 @@ register()
 
 echo "Registering checks:"
 register apt-updates
+register restart
 if command -v sshd >/dev/null 2>&1
 then
     register ssh-password
@@ -162,6 +165,7 @@ echo "  /usr/local/sbin/apt-updates-check"
 echo "  /usr/local/sbin/ssh-password-check"
 echo "  /usr/local/sbin/pg-collation-check"
 echo "  /usr/local/sbin/pg-collation-fix"
+echo "  /usr/local/sbin/restart-check"
 echo "  /etc/systemd/system/login-warnings.service (enabled)"
 echo "  /etc/dpkg/dpkg.cfg.d/login-warnings"
 echo "  /etc/apt/apt.conf.d/80login-warnings"
