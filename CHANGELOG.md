@@ -4,6 +4,23 @@ All notable changes to this project are documented in this file.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project
 uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [6.1.0] - 2026-11-25
+
+### Added
+
+- `restart` turns red when a replaced file came with a security update: the package that owns
+  its path now (`dpkg -S`, in both spellings on a merged `/usr`, and as `<name>.so.*` for a
+  library with a new file name) has its installed version from a security archive. The section
+  names those packages. Only files of processes counted here, not of containers.
+- With systemd itself or a service that should not be restarted on the fly among them, the
+  section says first that a reboot covers all of this.
+
+### Changed
+
+- The lists of careful services, users, VMs and other programs stand on their own lines below
+  their heading, like the services, so that a long list does not wrap into what looks like the
+  next item.
+
 ## [6.0.0] - 2026-11-25
 
 ### Added

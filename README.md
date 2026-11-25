@@ -36,7 +36,7 @@ Four checks so far:
 | `apt-updates` | Package updates offered by the package lists, by name, security updates separately, how old the lists are, installed packages that no package source offers any more (in use, or left over from an older release), config files of removed packages that can go or must stay, and the `apt purge` command for exactly what can go; packages `apt autoremove` would remove, with an `apt remove` command for exactly those. |
 | `pg-collation` | PostgreSQL databases whose collation version no longer matches glibc, with a fix script. Covers the Debian/PGDG clusters and the PostgreSQL bundled with the GitLab Linux package. |
 | `ssh-password` | Whether the SSH server accepts password logins, where the setting comes from, and how to allow keys only. |
-| `restart` | Programs that still use files an update has replaced, usually libraries: the services with a `systemctl try-restart` command for exactly those, systemd itself, logged-in users and Proxmox VE VMs. |
+| `restart` | Programs that still use files an update has replaced, usually libraries: the services with a `systemctl try-restart` command for exactly those, systemd itself, logged-in users and Proxmox VE VMs; red when one of the files came with a security update. |
 
 ## How it works
 
@@ -440,6 +440,17 @@ the root alone tells a container (measured on a Debian 13 container, 2026-11-25)
 containers have a root of their own, and postfix's chrooted `pickup` has another root but runs
 in `postfix.service`.
 
+When systemd itself or one of the careful services is among them, the section says first that a
+reboot covers all of this: that is usually the case after an update of a library systemd links,
+such as libzstd, which then shows up in almost every process.
+
+The section turns red when one of the replaced files came with a security update, and names the
+packages: the package that owns the file's path now (`dpkg -S`, in both spellings on a merged
+`/usr`, and as `<name>.so.*` for a library whose new version has another file name) has its
+installed version from a security archive (`-security/` in `apt-cache policy`). The running
+programs do not have that fix yet. A security update that is not installed at all is not counted
+here; `apt-updates` names it.
+
 `restart-check --details` lists every process with the replaced files it uses.
 
 Not seen: scripts of interpreters (Python, Perl) whose modules changed, a file that is changed in
@@ -451,6 +462,7 @@ result is the state when the check last ran: after restarting something by hand,
 | --- | --- |
 | nothing uses a replaced file | `Restart needed: none` and how many processes were read (green) |
 | something does | `Restart needed: 2 services, systemd, 1 user`, the lists and commands above (orange) |
+| a replaced file came with a security update | the same, with `security updates that the running programs do not have yet:` and the packages (red) |
 | only processes in containers do | `none`, with a line that counts them (green) |
 | no process could be read | `Restart needed: CHECK FAILED`, then the last successful result (orange); exit status 1 |
 

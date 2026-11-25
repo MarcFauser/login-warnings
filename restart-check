@@ -4,8 +4,9 @@
 # Reports running programs that still use files an update has replaced, usually libraries, and
 # writes the result to /run/login-warnings/restart; login-warnings shows that file in every
 # interactive login shell, as one section of its display. The file always says when the check
-# ran: green "none", an orange list of what needs a restart with the commands, or an orange
-# "CHECK FAILED" followed by the last successful result (kept in /run/login-warnings/.restart.last).
+# ran: green "none", a list of what needs a restart with the commands (red when a replaced file
+# came with a security update, else orange), or an orange "CHECK FAILED" followed by the last
+# successful result (kept in /run/login-warnings/.restart.last).
 #
 # A program keeps the files it has mapped until it ends. dpkg replaces a file by renaming the
 # new one over the old one, so a running program still maps the old file, which the kernel
@@ -19,7 +20,12 @@
 # container sees it, so here it is only counted. (Services with their own mount namespace, and
 # chrooted service processes like postfix's, are services of this system.) Services that should
 # not be restarted on the fly, dbus, systemd-logind, networking and the like (the lists of
-# needrestart and checkrestart), are named apart from the restart command.
+# needrestart and checkrestart), are named apart from the restart command; with one of them or
+# systemd itself among the processes, the section says that a reboot covers everything.
+#
+# The package that owns a replaced file's path now (dpkg -S) tells whether the new version came
+# from a security archive (apt-cache policy, "-security/" in the source of the installed
+# version); then the running programs do not have that security fix yet.
 #
 # Not seen: scripts of interpreters (Python, Perl) whose modules changed, and a file changed in
 # place instead of replaced. The running kernel is not compared with the installed one.
@@ -75,7 +81,9 @@ fi
 mkdir -p -m 0755 "$DIR"
 checked_at=$(date '+%Y-%m-%d %H:%M:%S %:z')
 
-# Orange (index 208 of the 256-colour palette) for something to do, green for the all-clear.
+# Red (index 196 of the 256-colour palette) when a replaced file came with a security update,
+# orange (index 208) for something else to do, green for the all-clear.
+red=$(printf '\033[38;5;196m')
 orange=$(printf '\033[38;5;208m')
 green=$(printf '\033[32m')
 reset=$(printf '\033[0m')
@@ -203,6 +211,7 @@ others=""
 count_others=0
 in_containers=0
 affected=0
+host_files=""
 detail_lines=""
 for pid in $(printf '%s\n' "$hits" | awk -F '\t' 'NF { print $1 }' | sort -un)
 do
@@ -217,6 +226,9 @@ do
         continue
     fi
     affected=$((affected + 1))
+    files=$(printf '%s\n' "$hits" | awk -F '\t' -v p="$pid" '$1 == p { print $2 }')
+    host_files="$host_files
+$files"
     if [ "$pid" = 1 ] || [ "$cgroup" = /init.scope ]
     then
         systemd=1
@@ -250,7 +262,7 @@ $user"
     if [ "$details" -eq 1 ]
     then
         detail_lines="$detail_lines$pid $comm: $what
-$(printf '%s\n' "$hits" | awk -F '\t' -v p="$pid" '$1 == p { print "    " $2 }')
+$(printf '%s\n' "$files" | sed 's/^/    /')
 "
     fi
 done
@@ -262,6 +274,58 @@ count_services=$(printf '%s' "$services" | grep -c .)
 count_careful=$(printf '%s' "$careful_services" | grep -c .)
 count_users=$(printf '%s' "$users" | grep -c .)
 count_vms=$(printf '%s' "$vms" | grep -c .)
+
+# The path in both spellings below a merged /usr; dpkg answers only for the one a package
+# recorded.
+spellings()
+{
+    printf '%s\n' "$1"
+    case $1 in
+        /usr/bin/* | /usr/sbin/* | /usr/lib/* | /usr/lib32/* | /usr/lib64/* | /usr/libx32/*) printf '%s\n' "${1#/usr}" ;;
+        /bin/* | /sbin/* | /lib/* | /lib32/* | /lib64/* | /libx32/*) printf '%s\n' "/usr$1" ;;
+    esac
+}
+
+# The installed packages that own a replaced file's path now, names without architecture. A
+# library whose new version has another file name (libzstd.so.1.5.7, then .1.5.8) is looked up
+# as <name>.so.*, as checkrestart does.
+owners_of()
+{
+    found=$(spellings "$1" | while IFS= read -r p; do dpkg -S "$p" 2>/dev/null; done)
+    if [ -z "$found" ]
+    then
+        pattern=$(printf '%s\n' "$1" | sed -n 's/\(\.so\)\.[0-9.]*$/\1.*/p')
+        if [ -n "$pattern" ]
+        then
+            found=$(spellings "$pattern" | while IFS= read -r p; do dpkg -S "$p" 2>/dev/null; done)
+        fi
+    fi
+    printf '%s\n' "$found" | grep -v '^diversion ' | sed 's|: /.*$||' | tr ',' '\n' \
+        | sed 's/^ *//; s/:.*//' | grep .
+}
+
+# The owners of the replaced files whose installed version comes from a security archive
+# ("trixie-security/main" in apt-cache policy): a security fix that the running programs do not
+# have yet. Only files of processes counted here, not of containers.
+security_updates=""
+if [ "$affected" -gt 0 ]
+then
+    owners=$(printf '%s\n' "$host_files" | grep . | LC_ALL=C sort -u | while IFS= read -r f
+        do
+            owners_of "$f"
+        done | LC_ALL=C sort -u)
+    if [ -n "$owners" ]
+    then
+        security_updates=$(printf '%s\n' $owners | LC_ALL=C timeout 60 xargs -r apt-cache \
+            -o Dir::Cache::pkgcache= -o Dir::Cache::srcpkgcache= policy 2>/dev/null | awk '
+            /^[^ ]/ { pkg = $0; sub(/:.*/, "", pkg); current = 0; next }
+            /^ \*\*\* / { current = 1; next }
+            /^     [^ ]/ { current = 0; next }
+            /^        [0-9]/ { if (current && $0 ~ /-security\//) security[pkg] = 1; next }
+            END { for (p in security) print p }' | LC_ALL=C sort -u)
+    fi
+fi
+count_security=$(printf '%s' "$security_updates" | grep -c .)
 
 # "<n> <word>", with an s for more than one.
 counted()
@@ -287,7 +351,12 @@ then
     title="Restart needed: none"
     add "  no program of $read_count processes uses a replaced file"
 else
-    colour=$orange
+    if [ "$count_security" -gt 0 ]
+    then
+        colour=$red
+    else
+        colour=$orange
+    fi
     parts=""
     [ "$((count_services + count_careful))" -gt 0 ] && parts="$parts, $(counted $((count_services + count_careful)) service)"
     [ "$systemd" -eq 1 ] && parts="$parts, systemd"
@@ -295,6 +364,17 @@ else
     [ "$count_vms" -gt 0 ] && parts="$parts, $(counted "$count_vms" VM)"
     [ "$count_others" -gt 0 ] && parts="$parts, $(counted "$count_others" "other program")"
     title="Restart needed: ${parts#, }"
+    # When systemd itself or a service that should not be restarted on the fly is among them,
+    # a reboot is the way that covers everything.
+    if [ "$systemd" -eq 1 ] || [ "$count_careful" -gt 0 ]
+    then
+        add "  a reboot covers all of this"
+    fi
+    if [ "$count_security" -gt 0 ]
+    then
+        add "  security updates that the running programs do not have yet:"
+        add "$(printf '%s\n' "$security_updates" | tr '\n' ' ' | wrap '    ')"
+    fi
     if [ "$affected" -eq 1 ]
     then
         uses="uses"
@@ -310,7 +390,8 @@ else
     fi
     if [ "$count_careful" -gt 0 ]
     then
-        add "$(printf '%s\n' "restart with care, or reboot: $(printf '%s\n' "$careful_services" | tr '\n' ' ')" | wrap '  ')"
+        add "  restart with care, or reboot:"
+        add "$(printf '%s\n' "$careful_services" | tr '\n' ' ' | wrap '    ')"
     fi
     if [ "$systemd" -eq 1 ]
     then
@@ -318,15 +399,18 @@ else
     fi
     if [ "$count_users" -gt 0 ]
     then
-        add "$(printf '%s\n' "logged-in users (log out and in again): $(printf '%s\n' "$users" | tr '\n' ' ')" | wrap '  ')"
+        add "  logged-in users (log out and in again):"
+        add "$(printf '%s\n' "$users" | tr '\n' ' ' | wrap '    ')"
     fi
     if [ "$count_vms" -gt 0 ]
     then
-        add "$(printf '%s\n' "VMs whose QEMU process uses them (stop and start the VM): $(printf '%s\n' "$vms" | tr '\n' ' ')" | wrap '  ')"
+        add "  VMs whose QEMU process uses them (stop and start each one):"
+        add "$(printf '%s\n' "$vms" | tr '\n' ' ' | wrap '    ')"
     fi
     if [ "$count_others" -gt 0 ]
     then
-        add "$(printf '%s\n' "other programs:$others" | wrap '  ')"
+        add "  other programs:"
+        add "$(printf '%s\n' "${others# }" | wrap '    ')"
     fi
     add "  show the files: restart-check --details"
 fi

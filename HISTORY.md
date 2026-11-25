@@ -736,3 +736,35 @@ below it as well; a fake case covers it, and a copy with the old rule fails ther
 no LXC containers, so containers have only been seen from inside one so far.
 
 Version 6.0.0, because a new check is a new function.
+
+## 2026-11-25 - 6.1.0: a reboot, and the security updates
+
+Within the hour the user saw long lists on every server and asked whether they were right. On
+the Proxmox VE host they were, every one of them: the host had booted on 2026-11-21, and dpkg's
+log showed two updates since, both from the security archive (krb5 on 2026-11-23, libzstd on
+2026-11-25). Every process the check named had started before them; the pvedaemon workers of
+that night only looked newer, they are forked from a pvedaemon that is not. libzstd comes in
+through `libsystemd-shared`, so systemd itself, journald, udevd, logind, sshd and every Proxmox
+service map it, and krb5 through everything with GSSAPI, QEMU included.
+
+So a long list is the normal case after such an update, and the useful answer is a reboot. With
+systemd itself or a service that should not be restarted on the fly among the processes, the
+section now says that first. And it now tells whether the restart matters for security: the
+package that owns a replaced file's path now is asked with `dpkg -S`, in both spellings on a
+merged `/usr` and, for a library whose new version has another file name, as `<name>.so.*`
+(checkrestart's way); if `apt-cache policy` shows its installed version from a `-security/`
+archive, the running programs miss that fix, and the section turns red, as `apt-updates` does
+for a security update not yet installed. On the host, with the same name for the old and the
+new libzstd (a Debian security update keeps the upstream version), it named the five krb5 and
+libzstd packages.
+
+The long lists also showed a layout fault: a list after a heading on the same line wrapped onto
+a line with the heading's indentation and looked like the next item. Every list now stands
+below its heading, as the services did.
+
+Tested with the fakes of 6.0.0, extended by a fake `dpkg -S` and `apt-cache policy` (the libzstd
+block as the host printed it): a file found under its own name, one only in the other spelling,
+one only by the soname pattern, a package whose security update waits uninstalled (not red), and
+a container's file from a security update (not red either). Seven new copies with one part taken
+out failed there, the seventeen in all. On the host, from a temporary copy, 896 ms; on the
+container, still green.
