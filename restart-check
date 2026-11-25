@@ -140,7 +140,7 @@ $(sed 's/^/    /' "$LAST")"
     fi
     printf '%sRestart needed: CHECK FAILED\n%s\n%s\n%s%s\n' \
         "$orange" "$1" "$footer" "$last" "$reset" | publish "$FILE"
-    echo "restart-check: $(printf '%s\n' "$1" | head -n 1 | sed 's/^ *//')" >&2
+    echo "restart-check: $(printf '%s\n' "$1" | sed -n 1p | sed 's/^ *//')" >&2
     show
     exit 1
 }
@@ -217,10 +217,10 @@ for pid in $(printf '%s\n' "$hits" | awk -F '\t' 'NF { print $1 }' | sort -un)
 do
     # A process that ended since the scan needs nothing any more.
     [ -d "$PROC/$pid" ] || continue
-    cgroup=$(sed -n 's/^0:://p' "$PROC/$pid/cgroup" 2>/dev/null | head -n 1)
+    cgroup=$(sed -n 's/^0:://p' "$PROC/$pid/cgroup" 2>/dev/null | sed -n 1p)
     comm=$(cat "$PROC/$pid/comm" 2>/dev/null)
     root=$(stat -L -c '%d:%i' "$PROC/$pid/root" 2>/dev/null)
-    if [ -n "$root" ] && [ "$root" != "$ref_root" ] && ! printf '%s\n' "$cgroup" | grep -Eq -- "$service_re"
+    if [ -n "$root" ] && [ "$root" != "$ref_root" ] && ! printf '%s\n' "$cgroup" | grep -E -- "$service_re" >/dev/null
     then
         in_containers=$((in_containers + 1))
         continue
@@ -233,11 +233,11 @@ $files"
     then
         systemd=1
         what="systemd"
-    elif printf '%s\n' "$cgroup" | grep -Eq -- "$service_re"
+    elif printf '%s\n' "$cgroup" | grep -E -- "$service_re" >/dev/null
     then
         unit=$(printf '%s\n' "$cgroup" | sed 's|^/system\.slice/\([^/]*\.slice/\)*\([^/]*\.service\).*|\2|')
         what=$unit
-        if printf '%s\n' "$unit" | grep -Eq -- "$careful"
+        if printf '%s\n' "$unit" | grep -E -- "$careful" >/dev/null
         then
             careful_services="$careful_services $unit"
         else

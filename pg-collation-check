@@ -252,18 +252,18 @@ fi
 
 debian_affected=0
 gitlab_affected=0
-if printf '%s' "$result" | grep -q '^port '
+if printf '%s' "$result" | grep '^port ' >/dev/null
 then
     debian_affected=1
 fi
-if printf '%s' "$result" | grep -q '^GitLab, '
+if printf '%s' "$result" | grep '^GitLab, ' >/dev/null
 then
     gitlab_affected=1
 fi
 
 # With a newer glibc on disk than the running server uses, a reindex would still sort
 # with the old one, and pg-collation-fix compares with the running server.
-if printf '%s' "$result" | grep -q '(glibc on disk: '
+if printf '%s' "$result" | grep '(glibc on disk: ' >/dev/null
 then
     advice="  PostgreSQL still runs with the old glibc. Reboot first, or restart it
   and run pg-collation-check; the warning then shows what needs the fix:"

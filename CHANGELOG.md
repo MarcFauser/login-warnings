@@ -4,6 +4,18 @@ All notable changes to this project are documented in this file.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project
 uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [7.0.1] - 2026-11-26
+
+### Fixed
+
+- Under systemd, which runs services with SIGPIPE ignored, the run at boot logged
+  `grep: write error: Broken pipe` on Proxmox VE hosts since 5.0.5: two lookups in
+  `apt-updates-check` wrote into one `head -n 1`, and the second wrote after `head` had quit.
+  The result was right. Every reader in the scripts that stopped before the end of its input
+  (`head`, `grep -q`, `awk` with `exit`, a loop left early) now reads to the end (`sed -n 1p`,
+  `grep ... >/dev/null`, a flag in `awk`), so that no writer meets a closed pipe, however much it
+  writes.
+
 ## [7.0.0] - 2026-11-25
 
 ### Added

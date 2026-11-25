@@ -810,3 +810,43 @@ nothing to complain about in the unit. Its place in the boot order shows only in
 which has not happened yet.
 
 Version 7.0.0, because a new check is a new function.
+
+## 2026-11-26 - 7.0.1: a writer that meets a closed pipe
+
+Installing 7.0.0 on the Proxmox VE host, run as a transient systemd unit so that a dropped SSH
+connection could not cut it short, printed one stray line: `grep: write error: Broken pipe`.
+systemd runs services with SIGPIPE ignored (`IgnoreSIGPIPE=yes`, the default, read from both
+units of this project). A program that writes into a pipe whose reader has stopped then does not
+die quietly from the signal, as it does in a terminal, but gets an error and says so on stderr,
+which is the journal. The journal of the host had that line once in every boot since the boot
+after 5.0.5 went in, and not in the boots before.
+
+Two guesses were wrong before the cause was found: replacing `head` at the two places that looked
+alike changed nothing. A trace with `sh -x` of a temporary copy under systemd found it: the rule
+for systemd units asks `owners` for both spellings of a unit file and pipes both answers into one
+`head -n 1`. The first answer arrives, `head` quits, and the second `owners` writes into the closed
+pipe. The result never changed: the scripts run under `sh` without `pipefail`, and the status of a
+pipe is that of `head`.
+
+Measured with `dash` and `trap '' PIPE`, which is inherited the way `IgnoreSIGPIPE=yes` is, 300 runs
+for each shape: two writers in turn into `head -n 1`, 299 errors; one writer with a few lines, 0,
+because it writes them at once before the reader can stop; any writer of more than 64 KiB, the
+size of a pipe, the shell's own `printf` included, every time, also into `awk` with `exit` or
+`grep -q`; a loop left with `break`, every time; a here-document, never; and `sed -n 1p` in place
+of `head`, never in any shape. With `pipefail` the status is 141 without the signal ignored and 2
+with it.
+
+So every reader in the scripts that stopped before the end of its input now reads to the end, 36
+places in all, also the ones that only worked because their data was small: `sed -n 1p` and
+`sed -n 1,3p` for `head`, `grep ... >/dev/null` for `grep -q`, a flag for `awk`'s `exit` (two of
+those programs read sshd's debug output in `ssh-password-check`, which can exceed 64 KiB), and a
+loop in `zvol-links-check` that ran to its end instead of leaving at the first volume without a zd
+device.
+
+Tested: the four test suites, once as before and once with SIGPIPE ignored. On 7.0.0 the
+apt-updates suite showed 28 write errors with SIGPIPE ignored, now none; with only the one line put
+back, 28 again. Their output did not change against 7.0.0 apart from the times of an `ls -l`, so the
+change is one of form. A lint that lists such readers found the 36 places in 7.0.0 and none now. The
+copies with one rule taken out still fail in all three suites that have them.
+
+Version 7.0.1: a fix, nothing new.

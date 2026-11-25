@@ -162,7 +162,7 @@ zd_map()
 # The zd device of a zvol ($1) in a map ($2), or nothing.
 zd_of()
 {
-    printf '%s\n' "$2" | awk -F '\t' -v n="$1" '$2 == n { print $1; exit }'
+    printf '%s\n' "$2" | awk -F '\t' -v n="$1" '$2 == n && !found { print $1; found = 1 }'
 }
 
 # The VM a volume belongs to (vm-<id>-disk-N, vm-<id>-state-..., base-<id>-disk-N), or nothing.
@@ -206,7 +206,7 @@ then
     }
     if ! expected=$(expected_zvols)
     then
-        say "zfs list failed: $(printf '%s\n' "$expected" | head -n 1)"
+        say "zfs list failed: $(printf '%s\n' "$expected" | sed -n 1p)"
         exit 1
     fi
     # "<zd device><tab><zvol><tab><times triggered>"
@@ -236,7 +236,7 @@ then
                 zd=$(zd_of "$name" "$map")
                 # No zd device yet: ZFS has not created it, udev has nothing to process.
                 [ -n "$zd" ] || continue
-                times=$(printf '%s\n' "$triggered" | awk -F '\t' -v n="$name" '$2 == n { print $3; exit }')
+                times=$(printf '%s\n' "$triggered" | awk -F '\t' -v n="$name" '$2 == n && !found { print $3; found = 1 }')
                 times=${times:-0}
                 [ "$times" -lt 3 ] || continue
                 if [ "$dry_run" -eq 1 ]
@@ -264,10 +264,10 @@ $zd	$name	$((times + 1))"
     for name in $(printf '%s\n' "$triggered" | awk -F '\t' 'NF { print $2 }' | tr ' ' '\001')
     do
         name=$(printf '%s\n' "$name" | tr '\001' ' ')
-        zd=$(printf '%s\n' "$triggered" | awk -F '\t' -v n="$name" '$2 == n { print $1; exit }')
+        zd=$(printf '%s\n' "$triggered" | awk -F '\t' -v n="$name" '$2 == n && !found { print $1; found = 1 }')
         if [ "$dry_run" -eq 0 ] && [ $BLOCK "$DEV/zvol/$name" ]
         then
-            message=$(printf '%s\n' "$failures" | grep -E "^$zd: " | head -n 1)
+            message=$(printf '%s\n' "$failures" | grep -E "^$zd: " | sed -n 1p)
             record="$record
 repaired	$zd	$name	${message:--}"
             count_repaired=$((count_repaired + 1))
@@ -360,7 +360,7 @@ $(sed 's/^/    /' "$LAST")"
     fi
     printf '%sZvol links: CHECK FAILED\n%s\n%s\n%s%s\n' \
         "$orange" "$1" "$footer" "$last" "$reset" | publish "$FILE"
-    echo "zvol-links-check: $(printf '%s\n' "$1" | head -n 1 | sed 's/^ *//')" >&2
+    echo "zvol-links-check: $(printf '%s\n' "$1" | sed -n 1p | sed 's/^ *//')" >&2
     show
     exit 1
 }
@@ -381,7 +381,7 @@ then
 fi
 if ! expected=$(expected_zvols)
 then
-    fail "$(printf '%s\n' "zfs list failed: $(printf '%s\n' "$expected" | head -n 3 | tr '\n' ' ')" | wrap '  ')"
+    fail "$(printf '%s\n' "zfs list failed: $(printf '%s\n' "$expected" | sed -n 1,3p | tr '\n' ' ')" | wrap '  ')"
 fi
 count=$(printf '%s' "$expected" | grep -c .)
 if [ "$count" -eq 0 ]
@@ -451,10 +451,10 @@ then
         add "  bring the link back, then start the VM:"
         add "$(printf '%s\n' "$commands" | grep . | awk '!seen[$0]++')"
     fi
-    if printf '%s\n' "$missing" | while IFS= read -r name; do [ -n "$(zd_of "$name" "$map")" ] || exit 1; done
+    # The loop runs to the end: leaving it early would close the pipe while printf still writes.
+    without_zd=$(printf '%s\n' "$missing" | while IFS= read -r name; do [ -n "$(zd_of "$name" "$map")" ] || echo x; done)
+    if [ -n "$without_zd" ]
     then
-        :
-    else
         add "$(printf '%s\n' "a volume without a zd device has not been opened by ZFS yet; zvol_wait (zfs-volume-wait.service) waits for it" | wrap '  ')"
     fi
 elif [ -n "$repaired_now" ]

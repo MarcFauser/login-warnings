@@ -171,7 +171,7 @@ check_failed()
     then
         errors="    did not finish within 60 seconds"
     else
-        errors=$(printf '%s\n' "$2" | grep -E '^(E:|dpkg-query:)' | head -n 3 | wrap '    ')
+        errors=$(printf '%s\n' "$2" | grep -E '^(E:|dpkg-query:)' | sed -n 1,3p | wrap '    ')
         if [ -z "$errors" ]
         then
             errors="    exit status $3"
@@ -276,7 +276,7 @@ then
     if [ -n "$kernels" ] && [ -n "$patterns" ]
     then
         booted=$(uname -r)
-        booted_version=$(printf '%s\n' "$kernels" | awk -v u="$booted" '$2 == u { print $1; exit }')
+        booted_version=$(printf '%s\n' "$kernels" | awk -v u="$booted" '$2 == u && !found { print $1; found = 1 }')
         # The versions, newest first, compared the way dpkg compares them.
         remaining=$(printf '%s\n' "$kernels" | awk '{ print $1 }' | sort -u)
         ordered=""
@@ -410,13 +410,13 @@ then
                 in_use="$in_use $p"
                 continue ;;
         esac
-        if [ -n "$kept_re" ] && printf '%s\n' "$p" | grep -Eiq -- "$kept_re"
+        if [ -n "$kept_re" ] && printf '%s\n' "$p" | grep -Ei -- "$kept_re" >/dev/null
         then
             in_use="$in_use $p"
             continue
         fi
         if [ -n "$mapped" ] && printf '%s\n' "$files" | resolve_dirs \
-            | LC_ALL=C sort -u | LC_ALL=C comm -12 - /dev/fd/3 3<<EOF | grep -q .
+            | LC_ALL=C sort -u | LC_ALL=C comm -12 - /dev/fd/3 3<<EOF | grep . >/dev/null
 $mapped
 EOF
         then
@@ -620,7 +620,7 @@ do
         for u in $(grep -oE "deb-systemd-helper +(purge|disable|mask) +'?[A-Za-z0-9@_.:-]+\.(service|socket|timer|path|mount|target)" \
             "$postrm" | sed "s/.*[ ']//" | sort -u)
         do
-            owner=$( { owners "/usr/lib/systemd/system/$u" "$name"; owners "/lib/systemd/system/$u" "$name"; } | head -n 1)
+            owner=$( { owners "/usr/lib/systemd/system/$u" "$name"; owners "/lib/systemd/system/$u" "$name"; } | sed -n 1p)
             if [ -n "$owner" ]
             then
                 reason="its purge would switch off $u of $owner"
@@ -636,7 +636,7 @@ do
             do
                 if [ -n "$list" ] && grep -qxF -- "$f" "$list"
                 then
-                    owner=$(owners "$f" "$name" | head -n 1)
+                    owner=$(owners "$f" "$name" | sed -n 1p)
                     if [ -n "$owner" ]
                     then
                         reason="its purge would delete $f of $owner"
@@ -667,12 +667,12 @@ do
             case $f in
                 *[\$*?]) prefix=${f%?}; f="$prefix*" ;;
             esac
-            owner=$(owners "$f" "$name" | head -n 1)
+            owner=$(owners "$f" "$name" | sed -n 1p)
             if [ -z "$owner" ] && [ -f "$UCF_REGISTRY" ]
             then
                 owner=$(awk -v f="$f" -v pre="$prefix" -v self="$name" \
                     '($2 == f || (pre != "" && index($2, pre) == 1)) && $1 != self { print $1 }' "$UCF_REGISTRY" \
-                    | grep -xF -f /dev/fd/3 3<<EOF | head -n 1
+                    | grep -xF -f /dev/fd/3 3<<EOF | sed -n 1p
 $installed_names
 EOF
 )
@@ -694,7 +694,7 @@ EOF
             if [ -z "$prefix" ] && [ -L "$f" ]
             then
                 target=$(realpath -m -- "$f" 2>/dev/null)
-                owner=$(owners "$target" "$name" | head -n 1)
+                owner=$(owners "$target" "$name" | sed -n 1p)
                 if [ -n "$owner" ]
                 then
                     reason="its purge would delete the link $f to $target of $owner"
@@ -845,7 +845,7 @@ apt_command()
         printf '%s\n' "no package source offers the installed version of $what no updates:" \
             | wrap '  '
         printf '%s\n' "$(printf '%s\n' "$in_use" | tr '\n' ' ')" | wrap '    '
-        echo "  show: apt-cache policy $(printf '%s\n' "$in_use" | head -n 1)"
+        echo "  show: apt-cache policy $(printf '%s\n' "$in_use" | sed -n 1p)"
     fi
     if [ "$count_leftover" -gt 0 ]
     then
