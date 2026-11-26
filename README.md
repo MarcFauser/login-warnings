@@ -34,7 +34,7 @@ Five checks so far:
 | Check | Reports |
 | --- | --- |
 | `apt-updates` | Package updates offered by the package lists, by name, security updates separately, how old the lists are, installed packages that no package source offers any more (in use, or left over from an older release), config files of removed packages that can go or must stay, and the `apt purge` command for exactly what can go; packages `apt autoremove` would remove, with an `apt remove` command for exactly those. |
-| `pg-collation` | PostgreSQL databases whose collation version no longer matches glibc, with a fix script. Covers the Debian/PGDG clusters and the PostgreSQL bundled with the GitLab Linux package. |
+| `pg-collation` | PostgreSQL databases whose collation version no longer matches glibc, with a fix script. Covers the Debian/PGDG clusters, the PostgreSQL bundled with the GitLab Linux package and PostgreSQL in Docker containers, and names any other PostgreSQL server on the host as not checked. |
 | `ssh-password` | Whether the SSH server accepts password logins, where the setting comes from, and how to allow keys only. |
 | `restart` | Programs that still use files an update has replaced, usually libraries: the services with a `systemctl try-restart` command for exactly those, systemd itself, logged-in users and Proxmox VE VMs; red when one of the files came with a security update. |
 | `zvol-links` | ZFS volumes that have no link in `/dev/zvol`, so that a Proxmox VE VM using one does not start, with the commands that bring the link back; what the repair at boot re-triggered. |
@@ -45,7 +45,7 @@ Five checks so far:
 | --- | --- |
 | `/usr/local/sbin/login-warnings` | Runs every enabled check, shows the results, switches checks on and off, installs updates. |
 | `/etc/login-warnings.d/<check>` | One file per enabled check; its first line is the command that runs it. `<check>.off` is a check that is switched off. |
-| `/etc/systemd/system/login-warnings.service` | Runs every enabled check once after every boot, after PostgreSQL has started (and after `gitlab-runsvdir.service`, which starts GitLab's PostgreSQL), after sshd listens (`ssh.service` or `ssh.socket`) and after the zvol link repair. |
+| `/etc/systemd/system/login-warnings.service` | Runs every enabled check once after every boot, after PostgreSQL has started (and after `gitlab-runsvdir.service`, which starts GitLab's PostgreSQL, and `docker.service`), after sshd listens (`ssh.service` or `ssh.socket`) and after the zvol link repair. |
 | `/etc/systemd/system/login-warnings-zvol-repair.service` | Re-triggers udev at boot for ZFS volumes without a link in `/dev/zvol`, before Proxmox VE starts its guests. Enabled where ZFS is installed; runs only while `zvol-links` is switched on. |
 | `/etc/dpkg/dpkg.cfg.d/login-warnings` | Runs every enabled check after every dpkg run (`post-invoke`). |
 | `/etc/apt/apt.conf.d/80login-warnings` | Refreshes the package lists once a day and runs every enabled check after every apt update. |
@@ -56,7 +56,7 @@ Five checks so far:
 | `/usr/local/sbin/pg-collation-fix` | Runs `REINDEX DATABASE` on every affected database, then `ALTER DATABASE ... REFRESH COLLATION VERSION`. The version is only refreshed if the reindex succeeded. With `--gitlab` it works on GitLab's bundled PostgreSQL. |
 | `/usr/local/sbin/restart-check` | The `restart` check; writes `/run/login-warnings/restart`. |
 | `/usr/local/sbin/zvol-links-check` | The `zvol-links` check; writes `/run/login-warnings/zvol-links`. With `--repair`, the repair the unit above runs at boot. |
-| `/var/lib/login-warnings` | When the last apt update started and when it last reached a repository, and a marker while an apt update has not reached one; the latest release and when it was checked; the last zvol link repair that did something (`zvol-links-repair`). |
+| `/var/lib/login-warnings` | When the last apt update started and when it last reached a repository, and a marker while an apt update has not reached one; the latest release and when it was checked; the last zvol link repair that did something (`zvol-links-repair`); the Docker containers the last `pg-collation` check reached (`pg-collation-containers`), which the check at boot waits for. |
 
 Nothing is ever silent: an empty login would look exactly like an all-clear. Every section
 names date, time and trigger of its check (at boot, after a package change, after apt update,
@@ -73,7 +73,8 @@ windows on the same connection.
 
 `install.sh` switches on `apt-updates` and `restart`, `ssh-password` if an SSH server (`sshd`)
 is installed, `pg-collation` if PostgreSQL is installed locally (from the Debian or PGDG packages, or
-bundled with the GitLab Linux package), and `zvol-links` if ZFS has volumes (`zfs list -t volume`).
+bundled with the GitLab Linux package) or runs in a Docker container, and `zvol-links` if ZFS has
+volumes (`zfs list -t volume`).
 A check you switch off stays off when you install an update.
 
 ```bash
@@ -279,16 +280,17 @@ a reboot or a PostgreSQL restart first.
 
 | State | Section |
 | --- | --- |
-| everything fine | `PostgreSQL collation: OK` and the clusters that were checked, e.g. `clusters: port 5432, GitLab` (green) |
+| everything fine | `PostgreSQL collation: OK` and the clusters that were checked, e.g. `clusters: port 5432, GitLab, container joplin-db` (green) |
 | mismatch | `PostgreSQL collation: VERSION MISMATCH` with the affected databases and the fix (orange) |
 | glibc on disk newer than the running server | the same, with `(glibc on disk: 2.41)` behind the database and the advice to reboot or restart PostgreSQL first (orange) |
+| a PostgreSQL server the check cannot reach | `PostgreSQL also runs here, not checked:` with its process id and cgroup, below any of the other states (orange) |
 | no running cluster | `PostgreSQL collation: NOTHING CHECKED` (orange), so that an empty check never reads as OK |
-| check failed | `PostgreSQL collation: CHECK FAILED`, the cluster (port or GitLab), then the last successful result (orange); exit status 1 |
+| check failed | `PostgreSQL collation: CHECK FAILED`, the cluster (port, GitLab or container), then the last successful result (orange); exit status 1 |
 
-Requirements: PostgreSQL 15 or newer from the Debian or PGDG packages, or bundled with the
-GitLab Linux package; older versions do not track the collation version per database and are
-skipped. Standby clusters are skipped; the reindex on the primary is replicated to them.
-PostgreSQL running in containers is not covered.
+Requirements: PostgreSQL 15 or newer from the Debian or PGDG packages, bundled with the GitLab
+Linux package, or in a Docker container; older versions do not track the collation version per
+database and are skipped. Standby clusters are skipped; the reindex on the primary is replicated
+to them.
 
 GitLab's bundled PostgreSQL runs as the user `gitlab-psql` under `/var/opt/gitlab`, outside
 `pg_lsclusters`; the check reaches it through `gitlab-psql`. It links against the system
@@ -296,6 +298,36 @@ glibc, so a Debian release upgrade affects it like any other cluster. The check 
 when runit supervises it (`/opt/gitlab/service/postgresql`) and it is running; at boot it waits
 up to 60 seconds for it to answer, because runit starts it only after
 `gitlab-runsvdir.service`.
+
+### PostgreSQL in Docker containers
+
+The check finds PostgreSQL by its server process, a process named `postgres` whose parent is not
+one, and looks at its cgroup: `docker-<id>.scope` (Docker's systemd cgroup driver) or
+`/docker/<id>` (the cgroupfs driver) names the container. So the image does not matter. It
+queries the container with `docker exec` and `psql` inside it, as the user the official
+`postgres` image makes superuser: `POSTGRES_USER` (or the file `POSTGRES_USER_FILE` names), else
+`PGUSER`, else `postgres`. That image lets local users in without a password (`local all all
+trust` in `pg_hba.conf`). The role `postgres` does not exist when `POSTGRES_USER` names another
+one, which is why the check does not simply use it. An image without `psql`, or one that asks
+local users for a password, makes the check fail for that container (`CHECK FAILED`), never pass
+in silence.
+
+A container brings its own glibc, the one of its image, so only the version the running server
+reports counts there; the host's glibc on disk does not. A mismatch shows up when a container is
+recreated from an image with a newer glibc on a data folder made with an older one, for example
+from `postgres:16` on Debian 12 (glibc 2.36) to `postgres:16` on Debian 13 (2.41).
+
+At boot `login-warnings.service` runs after `docker.service`. Docker has started the containers
+with a restart policy by then (measured: their networks came up before Docker reported ready),
+but PostgreSQL inside may still be starting. So the check waits up to 60 seconds for every
+container of the last run that runs to answer
+(`/var/lib/login-warnings/pg-collation-containers`), and checks it even if its server process was
+not seen yet: one that never answers fails the check instead of dropping out of it.
+
+Any other PostgreSQL server process (podman, a cluster in a unit of its own) is named in the
+section as not checked, with its process id and cgroup, and the section turns orange. The servers
+of a guest of this host, an LXC container, are left out: the guest runs its own check. Docker in
+such a guest is the guest's too.
 
 ### Fixing a mismatch
 
@@ -336,6 +368,20 @@ gitlab-ctl start && pg-collation-check
 `pg-collation-fix --gitlab` runs as root and works through `gitlab-psql`. It turns off the
 statement timeout of one minute that GitLab sets, and it refuses to rebuild while other GitLab
 services are still running.
+
+#### Docker containers
+
+For a container, stop the containers that use its databases, rebuild, start them again:
+
+```bash
+/usr/local/sbin/pg-collation-fix --docker <container>
+pg-collation-check
+```
+
+`pg-collation-fix --docker` runs as root, through `docker exec`, as the same user the check uses.
+It refuses a container that is not running and one that runs a standby. It cannot know which
+containers use the database, so stopping them is up to you. A reboot is not needed: the server
+in the container already runs with the glibc of its image.
 
 ## ssh-password: SSH password login
 
@@ -525,7 +571,7 @@ update, and by hand. After bringing a link back by hand, run `zvol-links-check`.
 - Debian or a derivative with systemd, dpkg and apt
 - `wget` or `curl` (on a minimal installation: `apt install wget`)
 - for `pg-collation`: PostgreSQL installed locally, from the Debian or PGDG packages or bundled
-  with the GitLab Linux package (see above)
+  with the GitLab Linux package, or in a Docker container with `psql` inside (see above)
 - for `ssh-password`: the OpenSSH server (`openssh-server`, which brings the `ssh` client the
   check uses)
 - for `zvol-links`: OpenZFS (`zfsutils-linux`, which brings the `zvol_id` the check uses)

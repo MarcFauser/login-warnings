@@ -4,6 +4,22 @@ All notable changes to this project are documented in this file.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project
 uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [7.1.0] - 2026-11-26
+
+### Added
+
+- `pg-collation` checks PostgreSQL in Docker containers. It finds them by their server process
+  and its cgroup, whatever the image, and queries them with `docker exec` and `psql` as the user
+  the official `postgres` image makes superuser (`POSTGRES_USER`, `POSTGRES_USER_FILE`, `PGUSER`,
+  else `postgres`). A container's own glibc counts, not the host's. At boot the check runs after
+  `docker.service` and waits up to 60 seconds for the containers of its last run to answer.
+  `pg-collation-fix --docker <container>` rebuilds the indexes in one. `install.sh` switches the
+  check on where PostgreSQL runs in a container.
+- Any other PostgreSQL server on the host (podman, a cluster in a unit of its own) is named in
+  the section as not checked, and the section turns orange. Before, a host whose PostgreSQL ran
+  only in Docker had no `pg-collation` section at all. Guests of the host (LXC) are left to their
+  own check.
+
 ## [7.0.1] - 2026-11-26
 
 ### Fixed

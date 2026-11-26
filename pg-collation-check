@@ -13,17 +13,28 @@
 # The second catches a glibc upgrade before PostgreSQL has been restarted: until then the
 # running server still reports the old version.
 #
-# Two kinds of clusters are checked: those of the Debian and PGDG packages (user postgres,
-# ports from pg_lsclusters), and the PostgreSQL bundled with the GitLab Linux package
-# (/opt/gitlab, user gitlab-psql), reached through gitlab-psql. GitLab's links against the
-# system glibc, so a Debian upgrade affects it the same way. The OK section names the clusters
-# that were checked; if none was running, the section says so instead of reporting OK.
+# Three kinds of clusters are checked: those of the Debian and PGDG packages (user postgres,
+# ports from pg_lsclusters), the PostgreSQL bundled with the GitLab Linux package
+# (/opt/gitlab, user gitlab-psql), reached through gitlab-psql, and PostgreSQL in Docker
+# containers, reached with docker exec. GitLab's links against the system glibc, so a Debian
+# upgrade affects it the same way. A container brings its own glibc: there only the running
+# server's version counts. The OK section names the clusters that were checked; if none was
+# running, the section says so instead of reporting OK.
+#
+# Containers are found by their PostgreSQL server process (a process named postgres whose
+# parent is not one) and its cgroup, so the image does not matter. In a container, psql runs
+# as the user the postgres image made superuser (POSTGRES_USER, or the file
+# POSTGRES_USER_FILE names, else PGUSER, else postgres), over the container's own socket. A
+# server process that is none of these kinds and not a guest of this host (LXC) is named as
+# not checked, so that PostgreSQL here never goes unmentioned.
 #
 # Runs after every boot, dpkg run and apt update (login-warnings). Run it by hand at any
 # time, as root. If a cluster cannot be queried, the exit status is 1 and the login shows the
-# failure, so a failed check never looks like an all-clear.
+# failure, so a failed check never looks like an all-clear. --containers only lists the
+# containers that run PostgreSQL (for install.sh).
 #
 # Usage: pg-collation-check [--quiet] [--trigger boot|dpkg|apt|manual]
+#        pg-collation-check --containers
 PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 cd /
 
@@ -31,15 +42,32 @@ DIR=/run/login-warnings
 FILE=$DIR/pg-collation
 # Hidden from the login display (its glob skips dot files): the last successful result.
 LAST=$DIR/.pg-collation.last
+# The containers checked in the last run, one name per line; at boot the check waits for those
+# that run. Rebuilt by every run, so an unreadable file only means no wait.
+STATE=/var/lib/login-warnings
+CONTAINERS=$STATE/pg-collation-containers
+# Read to find the server processes; redirected by the tests.
+PROC=/proc
+# How long the check waits at boot for GitLab's PostgreSQL and for containers, in seconds.
+BOOT_WAIT=60
+
+usage()
+{
+    echo "Usage: pg-collation-check [--quiet] [--trigger boot|dpkg|apt|manual]" >&2
+    echo "       pg-collation-check --containers" >&2
+    exit 2
+}
 
 quiet=0
 trigger=manual
+list_containers=0
 while [ $# -gt 0 ]
 do
     case $1 in
         --quiet) quiet=1 ;;
         --trigger) shift; trigger=${1:-manual} ;;
-        *) echo "Usage: pg-collation-check [--quiet] [--trigger boot|dpkg|apt|manual]" >&2; exit 2 ;;
+        --containers) list_containers=1 ;;
+        *) usage ;;
     esac
     shift
 done
@@ -49,7 +77,7 @@ case $trigger in
     dpkg) checked_by="after a package change" ;;
     apt) checked_by="after apt update" ;;
     manual) checked_by="by hand" ;;
-    *) echo "Usage: pg-collation-check [--quiet] [--trigger boot|dpkg|apt|manual]" >&2; exit 2 ;;
+    *) usage ;;
 esac
 
 if [ "$(id -u)" -ne 0 ]
@@ -61,29 +89,121 @@ fi
 GITLAB_CTL=/opt/gitlab/bin/gitlab-ctl
 GITLAB_PSQL=/opt/gitlab/bin/gitlab-psql
 
-# $1 is the port of a Debian/PGDG cluster, or "gitlab" for GitLab's bundled cluster.
+# psql inside a container, run there by sh with the SQL as $1: as the user the postgres image
+# made superuser (initdb --username="$POSTGRES_USER", default postgres), over the container's own
+# socket, which the image opens to local users without a password ("local all all trust").
+DOCKER_PSQL='u=${POSTGRES_USER:-}
+if [ -z "$u" ] && [ -n "${POSTGRES_USER_FILE:-}" ]
+then
+    u=$(cat "$POSTGRES_USER_FILE" 2>/dev/null)
+fi
+export PGCONNECT_TIMEOUT=2
+exec psql -XAtq -U "${u:-${PGUSER:-postgres}}" -d postgres -c "$1"'
+
+# $1 is the port of a Debian/PGDG cluster, "gitlab" for GitLab's bundled cluster, or
+# "docker:<container id>".
 query()
 {
-    if [ "$1" = gitlab ]
-    then
-        # gitlab-psql drops to the user gitlab-psql and knows socket and port; the -d given here
-        # wins over its default database. The connect timeout reaches psql through the environment.
-        PGCONNECT_TIMEOUT=2 timeout 5 "$GITLAB_PSQL" -XAtq -d postgres -c "$2" 2>/dev/null
-    else
-        timeout 5 runuser -u postgres -- psql -XAtq "port=$1 dbname=postgres connect_timeout=2" -c "$2" 2>/dev/null
-    fi
+    case $1 in
+        gitlab)
+            # gitlab-psql drops to the user gitlab-psql and knows socket and port; the -d given
+            # here wins over its default database. The connect timeout reaches psql through the
+            # environment.
+            PGCONNECT_TIMEOUT=2 timeout 5 "$GITLAB_PSQL" -XAtq -d postgres -c "$2" 2>/dev/null
+            ;;
+        docker:*)
+            timeout 10 docker exec "${1#docker:}" sh -c "$DOCKER_PSQL" sh "$2" 2>/dev/null
+            ;;
+        *)
+            timeout 5 runuser -u postgres -- psql -XAtq "port=$1 dbname=postgres connect_timeout=2" -c "$2" 2>/dev/null
+            ;;
+    esac
+}
+
+# The name of a container, without Docker's leading slash; its id if Docker does not answer.
+container_name()
+{
+    n=$(timeout 10 docker inspect -f '{{.Name}}' "$1" 2>/dev/null)
+    n=${n#/}
+    # Docker allows only these characters; anything else is not used, the name goes into SQL.
+    case $n in
+        '' | *[!A-Za-z0-9_.-]*) n=$(printf '%s' "$1" | cut -c 1-12) ;;
+    esac
+    printf '%s\n' "$n"
 }
 
 # The name of a cluster in the display.
 label()
 {
-    if [ "$1" = gitlab ]
-    then
-        echo GitLab
-    else
-        echo "port $1"
-    fi
+    case $1 in
+        gitlab) echo GitLab ;;
+        docker:*) echo "container $(container_name "${1#docker:}")" ;;
+        *) echo "port $1" ;;
+    esac
 }
+
+# Every PostgreSQL server process of this host as "<pid> <cgroup>": a process named postgres
+# whose parent is not one. Read from /proc, so that it is found whatever runs it.
+postmasters()
+{
+    for d in "$PROC"/[0-9]*
+    do
+        [ "$(cat "$d/comm" 2>/dev/null)" = postgres ] || continue
+        # The parent is the second field after the command name in parentheses.
+        ppid=$(sed 's/.*) //' "$d/stat" 2>/dev/null | cut -d ' ' -f 2)
+        [ "$(cat "$PROC/$ppid/comm" 2>/dev/null)" = postgres ] && continue
+        cg=$(sed -n 's/^0:://p' "$d/cgroup" 2>/dev/null)
+        # A process that has ended in between has no cgroup left to read.
+        [ -n "$cg" ] || continue
+        printf '%s %s\n' "${d##*/}" "$cg"
+    done
+}
+
+# The Docker container id in a cgroup: .../docker-<id>.scope (systemd cgroup driver) or
+# .../docker/<id> (cgroupfs driver).
+docker_id()
+{
+    printf '%s\n' "$1" | sed -n 's#.*/docker-\([0-9a-f]\{64\}\)\.scope.*#\1#p; s#.*/docker/\([0-9a-f]\{64\}\).*#\1#p' | sed -n 1p
+}
+
+# What runs a server process, from its cgroup: native (a Debian/PGDG cluster unit), gitlab
+# (runit under gitlab-runsvdir), docker, lxc (a guest of this host, which checks itself), or
+# other.
+kind_of()
+{
+    case $1 in
+        /lxc/* | /lxc.payload.* | */lxc.payload.*) echo lxc ;;
+        */postgresql@*.service* | */postgresql.service*) echo native ;;
+        */gitlab-runsvdir.service*) echo gitlab ;;
+        *)
+            if [ -n "$(docker_id "$1")" ]
+            then
+                echo docker
+            else
+                echo other
+            fi
+            ;;
+    esac
+}
+
+# The ids of the containers whose server process runs now, one per line, each once.
+running_containers()
+{
+    postmasters | while read -r _ cg
+    do
+        [ "$(kind_of "$cg")" = docker ] && docker_id "$cg"
+    done | LC_ALL=C sort -u
+}
+
+if [ "$list_containers" -eq 1 ]
+then
+    command -v docker >/dev/null 2>&1 || exit 0
+    for id in $(running_containers)
+    do
+        container_name "$id"
+    done
+    exit 0
+fi
 
 gitlab_running()
 {
@@ -130,7 +250,7 @@ if [ -x "$GITLAB_CTL" ] && [ -x "$GITLAB_PSQL" ] && [ -e /opt/gitlab/service/pos
 then
     if [ "$trigger" = boot ]
     then
-        deadline=$(( $(date +%s) + 60 ))
+        deadline=$(( $(date +%s) + BOOT_WAIT ))
         until { gitlab_running && query gitlab "SELECT 1" >/dev/null; } || [ "$(date +%s)" -ge "$deadline" ]
         do
             sleep 2
@@ -141,6 +261,56 @@ then
         targets="$targets gitlab"
     fi
 fi
+
+# PostgreSQL in Docker containers: those whose server process runs now. At boot
+# login-warnings.service starts after docker.service, which has started the containers with a
+# restart policy by then (measured: their networks came up before Docker reported ready), but
+# the server inside may still be starting. So wait up to 60 seconds for every container of the
+# last run that runs to answer, and check it even if its server process was not seen: one that
+# never answers makes the check fail instead of dropping out of it.
+docker_targets=""
+if command -v docker >/dev/null 2>&1
+then
+    remembered=""
+    if [ -r "$CONTAINERS" ]
+    then
+        remembered=$(grep -E '^[A-Za-z0-9][A-Za-z0-9_.-]*$' "$CONTAINERS" 2>/dev/null)
+    fi
+    if [ "$trigger" = boot ] && [ -n "$remembered" ]
+    then
+        deadline=$(( $(date +%s) + BOOT_WAIT ))
+        for c in $remembered
+        do
+            until [ "$(timeout 10 docker inspect -f '{{.State.Running}}' "$c" 2>/dev/null)" != true ] \
+                || query "docker:$c" "SELECT 1" >/dev/null || [ "$(date +%s)" -ge "$deadline" ]
+            do
+                sleep 2
+            done
+            if [ "$(timeout 10 docker inspect -f '{{.State.Running}}' "$c" 2>/dev/null)" = true ]
+            then
+                docker_targets="$docker_targets
+$(timeout 10 docker inspect -f '{{.Id}}' "$c" 2>/dev/null)"
+            fi
+        done
+    fi
+    docker_targets=$(printf '%s\n%s\n' "$docker_targets" "$(running_containers)" \
+        | grep -E '^[0-9a-f]{64}$' | LC_ALL=C sort -u)
+    for id in $docker_targets
+    do
+        targets="$targets docker:$id"
+    done
+fi
+
+# Server processes this check cannot reach are named in the section, so that PostgreSQL here is
+# never passed over in silence. A guest of this host (LXC) runs its own check.
+unchecked=$(postmasters | while read -r pid cg
+do
+    case $(kind_of "$cg") in
+        native | gitlab | lxc) ;;
+        docker) command -v docker >/dev/null 2>&1 || printf 'pid %s (%s)\n' "$pid" "$cg" ;;
+        *) printf 'pid %s (%s)\n' "$pid" "$cg" ;;
+    esac
+done)
 
 result=""
 failed=""
@@ -157,20 +327,33 @@ do
     then
         continue
     fi
+    # The glibc on disk is the host's; a container runs with its own, the one of its image, so
+    # there only the running server's version counts.
+    inst=$installed
+    case $target in
+        docker:*)
+            inst=""
+            # A standby replays the rebuild of its primary; it is skipped like a Debian standby.
+            if [ "$(query "$target" "SELECT pg_is_in_recovery()")" = t ]
+            then
+                continue
+            fi
+            ;;
+    esac
 
     if ! rows=$(query "$target" "
         SELECT '$name, ' || datname || ': '
                || coalesce(datcollversion, 'none') || ' -> '
                || coalesce(pg_database_collation_actual_version(oid), 'none')
-               || CASE WHEN datlocprovider = 'c' AND '$installed' <> ''
-                            AND pg_database_collation_actual_version(oid) IS DISTINCT FROM '$installed'
-                       THEN ' (glibc on disk: $installed)'
+               || CASE WHEN datlocprovider = 'c' AND '$inst' <> ''
+                            AND pg_database_collation_actual_version(oid) IS DISTINCT FROM '$inst'
+                       THEN ' (glibc on disk: $inst)'
                        ELSE '' END
         FROM pg_database
         WHERE datallowconn
           AND (datcollversion IS DISTINCT FROM pg_database_collation_actual_version(oid)
-               OR (datlocprovider = 'c' AND '$installed' <> ''
-                   AND datcollversion IS DISTINCT FROM '$installed'))")
+               OR (datlocprovider = 'c' AND '$inst' <> ''
+                   AND datcollversion IS DISTINCT FROM '$inst'))")
     then
         failed="$failed, $name"
         continue
@@ -185,8 +368,40 @@ done
 failed=${failed#, }
 checked=${checked#, }
 
+# The containers of this run, for the wait at the next boot: written next to the file, flushed
+# and renamed, so that a crash leaves the old list or the new one, never a short one.
+if command -v docker >/dev/null 2>&1
+then
+    names=$(for id in $docker_targets
+    do
+        container_name "$id"
+    done)
+    if [ -n "$names" ]
+    then
+        mkdir -p -m 0755 "$STATE"
+        printf '%s\n' "$names" > "$CONTAINERS.tmp" && chmod 0644 "$CONTAINERS.tmp" \
+            && sync -- "$CONTAINERS.tmp" && mv -f -- "$CONTAINERS.tmp" "$CONTAINERS"
+    else
+        rm -f -- "$CONTAINERS"
+    fi
+fi
+
 mkdir -p -m 0755 "$DIR"
 checked_at=$(date '+%Y-%m-%d %H:%M:%S %:z')
+
+# Lines of the section, indented by two spaces and wrapped below 80 columns.
+wrap()
+{
+    fold -s -w 75 | sed 's/ *$//; s/^/  /'
+}
+
+# Server processes that were not checked, as lines before the footer (empty if there are none).
+nc=""
+if [ -n "$unchecked" ]
+then
+    nc="$(printf '%s\n' "PostgreSQL also runs here, not checked: $(printf '%s\n' "$unchecked" | tr '\n' ' ')" | wrap)
+"
+fi
 
 # Orange (index 208 of the 256-colour palette) for problems, green for the all-clear.
 orange=$(printf '\033[38;5;208m')
@@ -215,8 +430,8 @@ $(sed 's/^/    /' "$LAST")"
     else
         last="  no successful check since boot"
     fi
-    printf '%sPostgreSQL collation: CHECK FAILED\n  could not query: %s\n%s\n%s%s\n' \
-        "$orange" "$failed" "$footer" "$last" "$reset" | publish "$FILE"
+    printf '%sPostgreSQL collation: CHECK FAILED\n%s\n%s%s\n%s%s\n' \
+        "$orange" "$(printf '%s\n' "could not query: $failed" | wrap)" "$nc" "$footer" "$last" "$reset" | publish "$FILE"
     echo "pg-collation-check: could not query: $failed." >&2
     if [ "$quiet" -eq 0 ]
     then
@@ -228,8 +443,13 @@ fi
 # An OK over no cluster at all would look like an all-clear; it is said instead.
 if [ -z "$checked" ]
 then
-    printf '%sPostgreSQL collation: NOTHING CHECKED\n  no running PostgreSQL 15 or newer was found\n%s%s\n' \
-        "$orange" "$footer" "$reset" | publish "$FILE"
+    nothing="no running PostgreSQL 15 or newer was found"
+    if [ -n "$nc" ]
+    then
+        nothing="no PostgreSQL 15 or newer could be checked"
+    fi
+    printf '%sPostgreSQL collation: NOTHING CHECKED\n  %s\n%s%s%s\n' \
+        "$orange" "$nothing" "$nc" "$footer" "$reset" | publish "$FILE"
     publish "$LAST" < "$FILE"
     if [ "$quiet" -eq 0 ]
     then
@@ -240,8 +460,14 @@ fi
 
 if [ -z "$result" ]
 then
-    printf '%sPostgreSQL collation: OK\n  clusters: %s\n%s%s\n' "$green" "$checked" "$footer" "$reset" \
-        | publish "$FILE"
+    # Green only when every server process here was checked.
+    colour=$green
+    if [ -n "$nc" ]
+    then
+        colour=$orange
+    fi
+    printf '%sPostgreSQL collation: OK\n%s\n%s%s%s\n' "$colour" "$(printf '%s\n' "clusters: $checked" | wrap)" \
+        "$nc" "$footer" "$reset" | publish "$FILE"
     publish "$LAST" < "$FILE"
     if [ "$quiet" -eq 0 ]
     then
@@ -301,6 +527,25 @@ else
     fi
 fi
 
+# A container runs with the glibc of its image, so its fix does not wait for a reboot.
+docker_affected=$(printf '%s' "$result" | sed -n 's/^container \([^,]*\), .*/\1/p' | LC_ALL=C sort -u)
+if [ -n "$docker_affected" ]
+then
+    if [ -n "$advice" ]
+    then
+        advice="$advice
+"
+    fi
+    advice="$advice  For a container, stop what uses it, rebuild, then check again:"
+    for c in $docker_affected
+    do
+        advice="$advice
+    /usr/local/sbin/pg-collation-fix --docker $c"
+    done
+    advice="$advice
+    pg-collation-check"
+fi
+
 publish "$FILE" <<EOF
 ${orange}PostgreSQL collation: VERSION MISMATCH
   The collation version of the operating system (glibc) has changed.
@@ -309,7 +554,7 @@ ${orange}PostgreSQL collation: VERSION MISMATCH
 $(printf '%s' "$result" | sed 's/^/    /')
 $advice
   While indexes are rebuilt, queries on the affected tables have to wait.
-$footer${reset}
+${nc}$footer${reset}
 EOF
 publish "$LAST" < "$FILE"
 

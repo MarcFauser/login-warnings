@@ -850,3 +850,47 @@ change is one of form. A lint that lists such readers found the 36 places in 7.0
 copies with one rule taken out still fail in all three suites that have them.
 
 Version 7.0.1: a fix, nothing new.
+
+## 2026-11-26 - 7.1.0: PostgreSQL in Docker
+
+On a host whose only PostgreSQL ran in a Docker container, a dump printed PostgreSQL's warning
+that the database `postgres` was made with collation version 2.36 while the system provides 2.41,
+and the login had shown nothing. The user's words: the tool was installed and showed nothing,
+which is exactly what it was built for. The README said that containers were not covered, and
+`install.sh` had not even switched the check on there, so there was no section at all, not even
+`NOTHING CHECKED`: the silence the README promises never to allow.
+
+Read and measured before anything was built: the official image's entrypoint makes
+`POSTGRES_USER` the superuser (`initdb --username="$POSTGRES_USER"`) and leaves local connections
+on initdb's `trust`; on the host the role `postgres` did not exist, because `POSTGRES_USER` named
+another. The container's server process had the cgroup `/system.slice/docker-<id>.scope` and
+`containerd-shim` as its parent. At the last boot `login-warnings.service` had run in the same two
+seconds as `docker.service`, while the containers got their networks 0.4 seconds before Docker
+reported ready: without an ordering the check at boot would have missed them.
+
+So the check now finds PostgreSQL by its server processes in `/proc` and sorts them by cgroup:
+native Debian/PGDG clusters, GitLab's under `gitlab-runsvdir.service`, Docker containers, guests of
+the host (LXC, which check themselves), and anything else, which is named as not checked so that
+PostgreSQL on the host is never passed over. Containers are queried with `docker exec` and `psql`
+as the image's superuser; the host's glibc on disk is left out for them, since a container runs
+with its image's. `login-warnings.service` runs after `docker.service`, and at boot the check
+waits up to 60 seconds for the containers of its last run, kept in `/var/lib`, and checks a running
+one even if its server was not seen, so that one that never answers fails the check.
+`pg-collation-fix --docker` rebuilds the indexes in a container.
+
+Tested with twenty-eight fake cases against a fake `/proc` and `docker`, whose `exec` runs the
+check's own shell code in the container's environment, so the choice of the user is the real one;
+twenty copies with one rule taken out each fail there. One did not at first: the copy without the
+LXC rule passed, because the guests in the test ran `postgresql@` units, which the rule for
+native clusters already recognises. The rule matters for Docker inside a guest, which the host's
+`docker` does not know, and the case got that. Then live, with the user's consent, on the Docker
+host: a test database made with `postgres:16` on Debian 12 (glibc 2.36), the same folder started
+with `postgres:16` on Debian 13 (2.41), which printed the very warning of the dump. The check
+reported the mismatch for its three databases, `--docker` rebuilt them, and the check then said OK
+for that container and the real one; afterwards the test container, its folder and the image were
+removed. Read only on three more hosts: a second Docker host (OK), the GitLab host (its server in
+`/gitlab.slice/gitlab-runsvdir.service`, OK) and a Proxmox VE host with a cluster in an LXC guest
+(`/lxc/102/...`, left out, nothing named as not checked).
+
+Version 7.1.0, chosen by the user: the same check for one more kind of cluster, like GitLab's in
+3.4.0.

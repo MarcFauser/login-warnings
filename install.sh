@@ -20,7 +20,8 @@
 #
 # Registers apt-updates and restart, ssh-password if an SSH server (sshd) is installed,
 # pg-collation if PostgreSQL is installed locally (Debian/PGDG packages, or the PostgreSQL
-# bundled with the GitLab Linux package), and zvol-links where ZFS has volumes. A check that was
+# bundled with the GitLab Linux package) or runs in a Docker container, and zvol-links where
+# ZFS has volumes. A check that was
 # switched off (login-warnings disable) stays off. Run as root from the unpacked release
 # archive (/usr/local/src/login-warnings) or a checkout of this repository. Safe to run again;
 # existing files are overwritten, which is also how updates are applied (login-warnings update
@@ -152,12 +153,18 @@ if [ -x /opt/gitlab/bin/gitlab-psql ] && [ -e /opt/gitlab/service/postgresql ]
 then
     gitlab=1
 fi
-if [ "$postgresql" -eq 1 ] || [ "$gitlab" -eq 1 ]
+# PostgreSQL in Docker containers, found by its server process; the check lists them.
+containers=""
+if command -v docker >/dev/null 2>&1
+then
+    containers=$(/usr/local/sbin/pg-collation-check --containers 2>/dev/null || true)
+fi
+if [ "$postgresql" -eq 1 ] || [ "$gitlab" -eq 1 ] || [ -n "$containers" ]
 then
     register pg-collation
 else
     echo "  pg-collation: not registered, no local PostgreSQL (no user postgres with psql,"
-    echo "    no PostgreSQL of the GitLab Linux package)"
+    echo "    no PostgreSQL of the GitLab Linux package, none running in a Docker container)"
 fi
 zfs=0
 zvol_names=""
@@ -221,6 +228,12 @@ if [ "$gitlab" -eq 1 ]
 then
     echo "GitLab's bundled PostgreSQL:"
     /opt/gitlab/bin/gitlab-ctl status postgresql || true
+    echo
+fi
+if [ -n "$containers" ]
+then
+    echo "PostgreSQL in Docker containers (only 15+ can be checked):"
+    printf '%s\n' "$containers" | sed 's/^/  /'
     echo
 fi
 

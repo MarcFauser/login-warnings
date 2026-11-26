@@ -11,13 +11,28 @@
 # (gitlab-ctl stop && gitlab-ctl start postgresql); the script refuses while other GitLab
 # services run.
 #
+# With --docker <container> it works on the PostgreSQL in that Docker container, through
+# docker exec, as root, as the user the postgres image made superuser (POSTGRES_USER, or the
+# file POSTGRES_USER_FILE names, else PGUSER, else postgres), as pg-collation-check does. Stop
+# what uses the database first; the script cannot know which containers those are.
+#
 # Usage: runuser -u postgres -- /usr/local/sbin/pg-collation-fix
 #        /usr/local/sbin/pg-collation-fix --gitlab
+#        /usr/local/sbin/pg-collation-fix --docker <container>
 set -euo pipefail
 cd /
 
 GITLAB_CTL=/opt/gitlab/bin/gitlab-ctl
 GITLAB_PSQL=/opt/gitlab/bin/gitlab-psql
+
+# psql inside a container, run there by sh with psql's arguments: the superuser of the postgres
+# image over the container's own socket, as in pg-collation-check.
+DOCKER_PSQL='u=${POSTGRES_USER:-}
+if [ -z "$u" ] && [ -n "${POSTGRES_USER_FILE:-}" ]
+then
+    u=$(cat "$POSTGRES_USER_FILE" 2>/dev/null)
+fi
+exec psql -U "${u:-${PGUSER:-postgres}}" "$@"'
 
 MISMATCH_SQL="
     SELECT datname
@@ -29,31 +44,31 @@ usage()
 {
     echo "Usage: runuser -u postgres -- $0" >&2
     echo "       $0 --gitlab" >&2
+    echo "       $0 --docker <container>" >&2
     exit 2
 }
 
-# psql for one cluster: $1 is a port, or "gitlab" for GitLab's bundled cluster.
-# gitlab-psql drops to the user gitlab-psql; a -d given here wins over its default database.
+# psql for one cluster: $1 is a port, "gitlab" for GitLab's bundled cluster, or
+# "docker:<container>". gitlab-psql drops to the user gitlab-psql; a -d given here wins over its
+# default database. docker exec -i hands the rebuild's SQL on stdin to psql in the container.
 run_psql()
 {
     local target=$1
     shift
-    if [ "$target" = gitlab ]
-    then
-        "$GITLAB_PSQL" "$@"
-    else
-        psql -p "$target" "$@"
-    fi
+    case $target in
+        gitlab) "$GITLAB_PSQL" "$@" ;;
+        docker:*) docker exec -i "${target#docker:}" sh -c "$DOCKER_PSQL" sh "$@" ;;
+        *) psql -p "$target" "$@" ;;
+    esac
 }
 
 label()
 {
-    if [ "$1" = gitlab ]
-    then
-        echo "GitLab"
-    else
-        echo "Port $1"
-    fi
+    case $1 in
+        gitlab) echo "GitLab" ;;
+        docker:*) echo "Container ${1#docker:}" ;;
+        *) echo "Port $1" ;;
+    esac
 }
 
 list_ports()
@@ -73,13 +88,34 @@ list_ports()
 }
 
 gitlab=0
+container=""
 case $# in
     0) ;;
     1) [ "$1" = --gitlab ] || usage; gitlab=1 ;;
+    2) [ "$1" = --docker ] && [ -n "$2" ] || usage; container=$2 ;;
     *) usage ;;
 esac
 
-if [ "$gitlab" -eq 1 ]
+if [ -n "$container" ]
+then
+    if [ "$(id -u)" -ne 0 ]
+    then
+        echo "Please run as root: $0 --docker $container" >&2
+        exit 1
+    fi
+    if [ "$(docker inspect -f '{{.State.Running}}' "$container" 2>/dev/null)" != true ]
+    then
+        echo "Container $container is not running (docker ps lists the running ones)." >&2
+        exit 1
+    fi
+    # A standby replays its primary's rebuild and cannot run its own.
+    if [ "$(run_psql "docker:$container" -XAtq -d postgres -c "SELECT pg_is_in_recovery()")" = t ]
+    then
+        echo "Container $container runs a standby; rebuild on its primary instead." >&2
+        exit 1
+    fi
+    targets=docker:$container
+elif [ "$gitlab" -eq 1 ]
 then
     if [ "$(id -u)" -ne 0 ]
     then
@@ -177,7 +213,11 @@ then
 fi
 
 echo
-if [ "$gitlab" -eq 1 ]
+if [ -n "$container" ]
+then
+    echo "All affected databases are fixed. Start what uses them again and update the login"
+    echo "warning: pg-collation-check"
+elif [ "$gitlab" -eq 1 ]
 then
     echo "All affected databases are fixed. Start GitLab again and update the login warning:"
     echo "  gitlab-ctl start && pg-collation-check"
